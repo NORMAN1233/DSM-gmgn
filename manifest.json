@@ -1,0 +1,40 @@
+﻿{
+  "manifest_version": 3,
+  "name": "DSM-gmgn",
+  "version": "2.0.0",
+  "description": "GMGN 小工具合集：已看 CA 标记 + 圆形 5 秒决策 + 非阻塞休息提醒，支持功能开关与设置，UI 风格与 DataStorm 保持一致。",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "https://gmgn.ai/*",
+    "https://*.gmgn.ai/*"
+  ],
+  "icons": {
+    "128": "gmgn-logo.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://gmgn.ai/*",
+        "https://*.gmgn.ai/*"
+      ],
+      "css": [
+        "styles.css"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "action": {
+    "default_title": "DSM-gmgn",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "128": "gmgn-logo.png"
+    }
+  }
+}
+

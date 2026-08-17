@@ -1,0 +1,116 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>DSM-gmgn</title>
+  <link rel="stylesheet" href="popup.css">
+  <link rel="stylesheet" href="gmgn-theme.css">
+  <link rel="stylesheet" href="dsm-custom.css">
+  <link rel="stylesheet" href="font-fix.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="pixel-logo gmgn-logo"><img src="gmgn-logo.svg" alt="GMGN"></div>
+      <div>
+        <p>GMGN TOOLBOX</p>
+        <h1>DSM-gmgn <small>v2.0</small></h1>
+      </div>
+      <label class="power"><input id="masterEnabled" type="checkbox" checked><span class="power-track"><span class="power-dot"></span></span></label>
+    </header>
+
+    <!-- 主屏 -->
+    <section id="homeScreen" class="screen active">
+      <p class="screen-label">01 / 功能模块</p>
+      <div class="home-menu">
+        <button class="primary-entry" data-open="viewedScreen"><span class="entry-code dsm-entry-code">✓</span><span><strong>已看 CA 标记</strong><small>进入 K 线后自动隐藏钱包卡片紫色长条</small></span><b>›</b></button>
+        <button class="primary-entry" data-open="decisionScreen"><span class="entry-code dsm-entry-code">⚡</span><span><strong>5秒极速决策</strong><small>K 线页圆形倒计时 + 非阻塞休息提醒</small></span><b>›</b></button>
+      </div>
+
+      <p class="screen-label">02 / 数据</p>
+      <div class="notify-card dsm-data-card">
+        <strong>已查看 CA 数量</strong>
+        <small>点击卡片进入 K 线页后自动记录</small>
+        <div class="dsm-count-line"><span>已记录</span><b id="viewedCount">0</b></div>
+        <button id="homeClearButton" class="save dsm-clear" type="button">清空记录 <b>↗</b></button>
+        <p id="homeMessage" class="message"></p>
+      </div>
+
+      <p class="screen-label">03 / 系统设置</p>
+      <div class="home-menu">
+        <button class="primary-entry" data-open="settingsScreen"><span class="entry-code dsm-entry-code">⚙</span><span><strong>系统设置</strong><small>主开关、倒计时、圆形大小与休息参数</small></span><b>›</b></button>
+      </div>
+    </section>
+
+    <!-- 已看 CA 标记 -->
+    <section id="viewedScreen" class="screen">
+      <button class="back" data-open="homeScreen">‹ 返回主菜单</button>
+      <div class="module-title"><span class="dsm-entry-code">✓</span><div><p>VIEWED CA</p><h2>已看 CA 标记</h2></div></div>
+      <div class="notify-card">
+        <strong>功能开关</strong>
+        <small>关闭后不再标记新 CA，也不会隐藏已看卡片的紫色长条。</small>
+        <label class="popup-enable-row"><span><b>启用已看 CA 标记</b><small>记录并隐藏已查看的 CA 卡片</small></span><input id="viewedEnabled" type="checkbox" checked><i><em></em></i></label>
+      </div>
+      <div class="notify-card dsm-data-card">
+        <strong>查看记录</strong>
+        <small>数据保存在 chrome.storage.local</small>
+        <div class="dsm-count-line"><span>已记录</span><b id="viewedCountDetail">0</b></div>
+        <button id="clearButton" class="save dsm-clear" type="button">清空已看记录 <b>↗</b></button>
+        <p id="viewedMessage" class="message"></p>
+      </div>
+    </section>
+
+    <!-- 5 秒极速决策 -->
+    <section id="decisionScreen" class="screen">
+      <button class="back" data-open="homeScreen">‹ 返回主菜单</button>
+      <div class="module-title"><span class="dsm-entry-code">⚡</span><div><p>5S DECISION</p><h2>5秒极速决策</h2></div></div>
+      <div class="notify-card">
+        <strong>圆形倒计时</strong>
+        <small>进入 GMGN K 线详情页后自动开始倒计时并扫描页面指标。</small>
+        <label class="popup-enable-row"><span><b>启用 5 秒决策</b><small>控制 K 线页圆形红绿灯</small></span><input id="decisionEnabled" type="checkbox" checked><i><em></em></i></label>
+        <div class="dsm-field-grid">
+          <label class="dsm-field"><span>倒计时（秒）</span><input id="decisionSeconds" type="number" min="1" max="60" step="1" value="5"></label>
+          <label class="dsm-field"><span>圆形大小（px）</span><input id="circleSize" type="number" min="60" max="400" step="10" value="120"></label>
+        </div>
+      </div>
+      <div class="notify-card">
+        <strong>电池休息提醒</strong>
+        <small>达到电池时长后右上角显示非阻塞提醒，不遮挡 GMGN 页面。</small>
+        <label class="popup-enable-row"><span><b>启用电池休息提醒</b><small>关闭后不提醒休息</small></span><input id="batteryEnabled" type="checkbox" checked><i><em></em></i></label>
+        <div class="dsm-field-grid">
+          <label class="dsm-field"><span>电池时长</span><select id="batteryMinutes"><option value="20">20 分钟</option><option value="40" selected>40 分钟</option><option value="60">60 分钟</option><option value="90">90 分钟</option></select></label>
+          <label class="dsm-field"><span>休息时长</span><select id="restMinutes"><option value="10">10 分钟</option><option value="20" selected>20 分钟</option><option value="30">30 分钟</option><option value="40">40 分钟</option></select></label>
+        </div>
+      </div>
+      <p id="decisionMessage" class="message"></p>
+    </section>
+
+    <!-- 系统设置 -->
+    <section id="settingsScreen" class="screen">
+      <button class="back" data-open="homeScreen">‹ 返回主菜单</button>
+      <div class="module-title"><span class="dsm-entry-code">⚙</span><div><p>SETTINGS</p><h2>系统设置</h2></div></div>
+      <div class="notify-card">
+        <strong>总开关</strong>
+        <small>关闭后所有 DSM-gmgn 页面功能暂停，已保存数据不会删除。</small>
+        <label class="popup-enable-row"><span><b>启用 DSM-gmgn</b><small>顶部电源开关与此同步</small></span><input id="dsmEnabled" type="checkbox" checked><i><em></em></i></label>
+      </div>
+      <div class="notify-card">
+        <strong>关于</strong>
+        <small>合并自 jonkongtiao / GMGN-5s-Decision，UI 对齐 DataStorm。</small>
+        <div class="dsm-about-row"><span>版本</span><b id="versionText">v2.0.0</b></div>
+        <div class="dsm-about-row"><span>适用范围</span><b>gmgn.ai</b></div>
+      </div>
+      <p id="settingsMessage" class="message"></p>
+    </section>
+  </main>
+
+  <script src="popup.js"></script>
+</body>
+</html>
+
+
+
+
+
+
