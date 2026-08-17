@@ -172,5 +172,3 @@ function advancedSaveBindings() {
 }
 
 init();
-
-

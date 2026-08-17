@@ -58,11 +58,6 @@
   box-shadow: 0 0 18px rgba(73, 223, 196, .7);
 }
 
-#dsm-decision-circle.dsm-circle-yellow {
-  background: radial-gradient(circle at 30% 30%, #ffe08a, #d99a2b 70%);
-  box-shadow: 0 0 18px rgba(255, 196, 81, .7);
-}
-
 #dsm-circle-text {
   font-size: 34px;
   font-weight: 800;

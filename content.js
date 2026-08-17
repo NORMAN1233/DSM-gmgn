@@ -1,4 +1,4 @@
-﻿(() => {
+(() => {
   'use strict';
 
   // ============================================================
@@ -61,7 +61,7 @@
     viewedMap: new Map(),
     lastUrl: location.href,
     scanQueued: false,
-    intervalId: null,
+    onMonitorPage: false,
     styleInjected: false,
     ac: null,
     processedCards: new WeakSet()
@@ -172,11 +172,16 @@
 
   function hideCardLeftBars(card) {
     const cardRect = card.getBoundingClientRect();
-    const elements = card.querySelectorAll('*');
-    for (const el of elements) {
+    const candidates = [];
+    // 第一遍纯读取 rect，中间无写入，整段仅触发一次布局
+    for (const el of card.querySelectorAll('*')) {
       const rect = el.getBoundingClientRect();
       if (rect.width <= 0 || rect.width > 8 || rect.height < 24) continue;
       if (rect.left - cardRect.left > 8) continue;
+      candidates.push(el);
+    }
+    // 第二遍统一写入，避免读写交错导致的反复重排
+    for (const el of candidates) {
       if (el.dataset.gmgnPrevDisplay === undefined) {
         el.dataset.gmgnPrevDisplay = el.style.display || '';
       }
@@ -221,8 +226,10 @@
 
   function applyViewedToAll() {
     if (!viewed.started) return;
+    viewed.onMonitorPage = isWalletMonitorPage();
+    if (!viewed.onMonitorPage) return;
+    // 兼容移除旧版 jiankongtiao 遗留条状元素，仅监控页执行
     document.querySelectorAll('.gmgn-viewed-ca-bar').forEach((el) => el.remove());
-    if (!isWalletMonitorPage()) return;
 
     const cards = document.querySelectorAll(viewed.CARD_SELECTOR);
     for (const card of cards) {
@@ -247,8 +254,6 @@
     }
   }
 
-  viewed.scheduleScan = scheduleViewedScan;
-
   function handleViewedUrlChange() {
     if (!viewed.started) return;
     const ca = getCurrentTokenCA();
@@ -266,15 +271,6 @@
     }
   }
 
-  function handleTokenClick(event) {
-    const anchor = event.target && event.target.closest
-      ? event.target.closest(viewed.CARD_SELECTOR)
-      : null;
-    if (!anchor) return;
-    const ca = getCAFromHref(anchor.getAttribute && anchor.getAttribute('href'));
-    if (ca) markViewed(ca);
-  }
-
   function startViewed() {
     if (viewed.started) return;
     viewed.started = true;
@@ -286,11 +282,8 @@
     patchHistory();
 
     viewed.ac = new AbortController();
-    document.addEventListener('click', handleTokenClick, { capture: true, signal: viewed.ac.signal });
-    document.addEventListener('auxclick', handleTokenClick, { capture: true, signal: viewed.ac.signal });
     window.addEventListener('popstate', watchedViewedUrl, { signal: viewed.ac.signal });
     window.addEventListener('hashchange', watchedViewedUrl, { signal: viewed.ac.signal });
-    viewed.intervalId = setInterval(watchedViewedUrl, 2000);
   }
 
   function stopViewed() {
@@ -300,10 +293,6 @@
     if (viewed.ac) {
       viewed.ac.abort();
       viewed.ac = null;
-    }
-    if (viewed.intervalId) {
-      clearInterval(viewed.intervalId);
-      viewed.intervalId = null;
     }
     viewed.scanQueued = false;
 
@@ -348,10 +337,8 @@
     circleText: null,
     resizeDot: null,
     restToast: null,
-    restToastTimer: null,
     restBtn: null,
     countdownTimer: null,
-    restTimer: null,
     currentUrl: location.href,
     currentTokenKey: null,
     inKlinePage: false,
@@ -360,7 +347,6 @@
     batteryEnd: 0,
     restEnd: 0,
     restShown: false,
-    intervalId: null,
     ac: null,
     LS_BATTERY_END: 'dsm_battery_until_v2',
     LS_REST_END: 'dsm_rest_until_v2',
@@ -382,13 +368,6 @@
 
   function getRestMinutes() {
     return clampInt(settings.restMinutes, 5, 120, 20);
-  }
-
-  function createEl(tag, className, text) {
-    const el = document.createElement(tag);
-    if (className) el.className = className;
-    if (text !== undefined) el.textContent = text;
-    return el;
   }
 
   function getTokenKey(href) {
@@ -467,7 +446,7 @@
 
   function setCircleState(state) {
     if (!decision.circle) return;
-    decision.circle.classList.remove('dsm-circle-red', 'dsm-circle-green', 'dsm-circle-yellow');
+    decision.circle.classList.remove('dsm-circle-red', 'dsm-circle-green');
     decision.circle.classList.add(`dsm-circle-${state}`);
   }
 
@@ -615,116 +594,6 @@
     if (decision.decisionRemaining > 0 && !decision.manualConfirmed) startDecisionCycle();
   }
 
-  function changeDecisionSeconds(delta) {
-    const next = Math.min(60, Math.max(1, getDecisionSeconds() + delta));
-    settings.decisionSeconds = next;
-    if (decision.circleText) decision.circleText.textContent = String(next);
-    persistSettings({ decisionSeconds: next });
-    if (decision.decisionRemaining > 0 && !decision.manualConfirmed) startDecisionCycle();
-  }
-
-  // ---------- 决策扫描 ----------
-  const positiveSignals = [];
-  const dangerSignals = [];
-  const warnSignals = [];
-
-  function addUniqueSignal(list, text, type) {
-    const key = text.toLowerCase().trim();
-    if (!list.some((x) => x.key === key)) {
-      list.push({ key, text, type });
-    }
-  }
-
-  function getPageText() {
-    try {
-      const root = document.querySelector('main') || document.body;
-      return (root.innerText || root.textContent || '').replace(/\u00a0/g, ' ').slice(0, 200000);
-    } catch (error) {
-      return '';
-    }
-  }
-
-  function analyzePage() {
-    const positives = [];
-    const dangers = [];
-    const warns = [];
-    const text = getPageText();
-    const lowerText = text.toLowerCase();
-
-    const devSellCn = text.match(/dev[^。\n]{0,50}?(已卖出|卖出|抛售|砸盘|清仓|减持|转出|出售)[^。\n]{0,50}/i);
-    if (devSellCn) {
-      const pctMatch = devSellCn[0].match(/(\d{1,3}(?:\.\d+)?)%/);
-      if (pctMatch) {
-        const pct = parseFloat(pctMatch[1]);
-        if (pct >= 50) dangers.push('🚨 Dev已卖出 ' + pct + '%');
-        else if (pct > 0) warns.push('🔶 Dev卖出 ' + pct + '%');
-        else positives.push('✅ Dev卖出 0%');
-      } else {
-        dangers.push('⚠️ Dev卖出: ' + devSellCn[0].slice(0, 60));
-      }
-    }
-
-    const devSellEn = lowerText.match(/dev[^.\n]{0,50}?(sell|sold|dumped|dumping|sold all|rug)[^.\n]{0,40}/i);
-    if (devSellEn) {
-      const enPctMatch = devSellEn[0].match(/(\d{1,3}(?:\.\d+)?)%/);
-      if (enPctMatch) {
-        const pct = parseFloat(enPctMatch[1]);
-        if (pct >= 50) dangers.push('🚨 Dev已卖出 ' + pct + '%');
-        else if (pct > 0) warns.push('🔶 Dev卖出 ' + pct + '%');
-        else positives.push('✅ Dev卖出 0%');
-      } else {
-        dangers.push('🚨 Dev抛售: ' + devSellEn[0].slice(0, 60));
-      }
-    }
-
-    const devHold = text.match(/dev[^。\n]{0,40}?(控盘|持仓|hold|own)[^。\n]{0,40}/i);
-    if (devHold) {
-      const pct = devHold[0].match(/([5-9][0-9]|100)(\.\d+)?%/i);
-      if (pct) dangers.push('🚨 Dev控盘 ' + pct[0]);
-      else if (/(全部|heavy|大额|大量|most|all)/i.test(devHold[0])) dangers.push('🚨 Dev疑似重仓: ' + devHold[0].slice(0, 50));
-    }
-
-    if (/(honeypot|貔貅|貔|恶意|貔貅盘|不能卖|无法卖出)/i.test(text)) {
-      dangers.push('🚨 检测到貔貅/恶意特征');
-    }
-
-    const topHolders = text.match(/(top ?10|top ?holders|前10|持有者集中|筹码集中)[^。\n]{0,40}/i);
-    if (topHolders) {
-      const pct = topHolders[0].match(/([5-9][0-9]|100)(\.\d+)?%/i);
-      if (pct) dangers.push('🚨 筹码集中 ' + pct[0]);
-    }
-
-    const smartInflow = text.match(/(聪明钱|smart ?money|smartmoney|smart money)[^。\n]{0,40}?(流入|买入|增持|进场|加仓|inflow|buy|increase|accumulate|add position)/i);
-    if (smartInflow) positives.push('✅ ' + smartInflow[0].slice(0, 60));
-
-    const topInflow = text.match(/(top ?holders|top ?holder|大户|巨鲸|机构|主力)[^。\n]{0,40}?(增持|买入|加仓|流入|净流入|inflow|buy|increase|accumulate)/i);
-    if (topInflow) positives.push('✅ ' + topInflow[0].slice(0, 60));
-
-    const capitalInflow = text.match(/(资金流入|主力流入|净流入|大单买入|主动买入|拉升|突破)/i);
-    if (capitalInflow) positives.push('✅ 资金/盘面亮点: ' + capitalInflow[0].slice(0, 60));
-
-    const devSafe = text.match(/dev[^。\n]{0,40}?(未卖出|未抛售|未出售|无卖出|锁仓|不卖|not sold|no sell|holding|lp burned|销毁)/i);
-    if (devSafe) positives.push('✅ Dev安全: ' + devSafe[0].slice(0, 60));
-
-    const devPartialSell = text.match(/dev[^。\n]{0,40}?(少量卖出|部分卖出|减持|少量出售|少量抛售)/i);
-    if (devPartialSell) {
-      const partialPct = devPartialSell[0].match(/(\d{1,3}(?:\.\d+)?)%/);
-      if (!partialPct || parseFloat(partialPct[1]) > 0) warns.push('🔶 Dev少量卖出: ' + devPartialSell[0].slice(0, 60));
-    }
-
-    const topMid = text.match(/(top ?10|top ?holders|前10|持有者集中|筹码集中)[^。\n]{0,30}?([3-5][0-9])(\.\d+)?%/i);
-    if (topMid) warns.push('🔶 筹码集中度 ' + (topMid[0].match(/([3-5][0-9])(\.\d+)?%?/) || [''])[0]);
-
-    return { positives, dangers, warns };
-  }
-
-  function scanPageSignals() {
-    const result = analyzePage();
-    result.positives.forEach((text) => addUniqueSignal(positiveSignals, text, 'positive'));
-    result.dangers.forEach((text) => addUniqueSignal(dangerSignals, text, 'danger'));
-    result.warns.forEach((text) => addUniqueSignal(warnSignals, text, 'warn'));
-  }
-
   // ---------- 圆形决策流程 ----------
   function stopDecisionCycle() {
     if (decision.countdownTimer) {
@@ -739,16 +608,11 @@
     ensureCircle();
     showCircle();
 
-    positiveSignals.length = 0;
-    dangerSignals.length = 0;
-    warnSignals.length = 0;
     decision.manualConfirmed = false;
 
     decision.decisionRemaining = getDecisionSeconds();
     setCircleState('red');
     decision.circleText.textContent = String(decision.decisionRemaining);
-
-    scanPageSignals();
 
     decision.countdownTimer = setInterval(() => {
       if (decision.manualConfirmed) return;
@@ -763,18 +627,9 @@
   }
 
   function finishDecision() {
-    scanPageSignals();
-
-    const hasDanger = dangerSignals.length > 0;
-    const hasPositive = positiveSignals.length > 0;
-
-    if (hasDanger || !hasPositive) {
-      setCircleState('red');
-      decision.circleText.textContent = '✕';
-    } else {
-      setCircleState('green');
-      decision.circleText.textContent = '✓';
-    }
+    // 未在倒计时内点击确认 → 超时标记（红 ✕）；点击圆圈 = 手动确认（绿 ✓）
+    setCircleState('red');
+    decision.circleText.textContent = '✕';
   }
 
   function closeDecisionCycle() {
@@ -924,8 +779,6 @@
     decision.ac = new AbortController();
     window.addEventListener('popstate', watchUrl, { signal: decision.ac.signal });
     window.addEventListener('hashchange', watchUrl, { signal: decision.ac.signal });
-    decision.intervalId = setInterval(watchUrl, 2000);
-    decision.restTimer = setInterval(updateRestTimer, 2000);
 
     handleLocationChange();
     updateRestTimer();
@@ -936,14 +789,6 @@
     decision.started = false;
 
     stopDecisionCycle();
-    if (decision.restTimer) {
-      clearInterval(decision.restTimer);
-      decision.restTimer = null;
-    }
-    if (decision.intervalId) {
-      clearInterval(decision.intervalId);
-      decision.intervalId = null;
-    }
     if (decision.ac) {
       decision.ac.abort();
       decision.ac = null;
@@ -976,12 +821,18 @@
     const originalReplace = history.replaceState;
     const wrappedPush = function (...args) {
       const result = originalPush.apply(this, args);
-      setTimeout(watchUrl, 0);
+      setTimeout(() => {
+        watchUrl();
+        watchedViewedUrl();
+      }, 0);
       return result;
     };
     const wrappedReplace = function (...args) {
       const result = originalReplace.apply(this, args);
-      setTimeout(watchUrl, 0);
+      setTimeout(() => {
+        watchUrl();
+        watchedViewedUrl();
+      }, 0);
       return result;
     };
 
@@ -994,6 +845,40 @@
       history.replaceState = wrappedReplace;
     } catch (error) {
       // ignore
+    }
+  }
+
+  // ============================================================
+  // 共享轮询 ticker：三个 2 秒轮询合并为单一定时器
+  // ============================================================
+  let tickerId = null;
+
+  function tick() {
+    if (viewed.started) watchedViewedUrl();
+    if (decision.started) {
+      watchUrl();
+      updateRestTimer();
+    }
+  }
+
+  function startTicker() {
+    if (tickerId !== null) return;
+    tickerId = setInterval(tick, 2000);
+  }
+
+  function stopTicker() {
+    if (tickerId !== null) {
+      clearInterval(tickerId);
+      tickerId = null;
+    }
+  }
+
+  // 任一模组启用即开轮询，全部关闭即停
+  function refreshTicker() {
+    if (viewed.started || decision.started) {
+      startTicker();
+    } else {
+      stopTicker();
     }
   }
 
@@ -1013,6 +898,7 @@
         if (next.viewedCAEnabled) startViewed();
         if (next.decisionEnabled) startDecisionModule();
       }
+      refreshTicker();
       return;
     }
 
@@ -1023,6 +909,7 @@
       } else {
         stopViewed();
       }
+      refreshTicker();
     }
 
     // 决策模块独立开关：不影响已看 CA
@@ -1032,6 +919,7 @@
       } else {
         stopDecisionModule();
       }
+      refreshTicker();
       return;
     }
 
@@ -1057,11 +945,13 @@
   function applyAll() {
     stopViewed();
     stopDecisionModule();
+    stopTicker();
 
     if (!isMasterOn()) return;
 
     if (settings.viewedCAEnabled) startViewed();
     if (settings.decisionEnabled) startDecisionModule();
+    refreshTicker();
   }
 
   // ---------- 初始化 ----------
@@ -1075,8 +965,3 @@
 
   init();
 })();
-
-
-
-
-
