@@ -1,12 +1,17 @@
 'use strict';
 
-// DSM-gmgn v2.6.9 — GMGN WSS monitoring + Cloudflare Edge-TTS playback.
+// DSM-gmgn v2.7.0 — GMGN WSS monitoring + Edge-TTS/chrome.tts playback.
 const recentSpeech = new Map();
 const DEDUPE_MS = 60 * 1000;
 let lastSearchTargetTabId = null;
 let creatingOffscreen = null;
 let offscreenReady = false;
 let ttsRequestSeq = 0;
+
+// 公共 Edge-TTS worker 的中文合成路径当前不稳定（纯中文上游报错、混合文本
+// 被截断成首词碎片，2026-08-22 实测）。含中文的播报改走 chrome.tts 系统引擎，
+// 纯英文文本仍走 Edge-TTS（该路径实测正常）。
+const CJK_CHAR_RE = /[\u3400-\u9FFF]/;
 
 const EDGE_TTS_VOICES = new Set([
   'zh-CN-XiaoxiaoNeural',
@@ -88,6 +93,68 @@ function normalizeEdgeRate(value) {
   percent = Math.min(200, Math.max(50, Math.round(percent)));
   const delta = percent - 100;
   return `${delta >= 0 ? '+' : ''}${delta}%`;
+}
+
+function chromeTtsRate(value) {
+  // chrome.tts 的 rate 是倍率（默认 1.0）；扩展设置存的是百分比（115 = +15%）。
+  const percent = Number(value);
+  const ratio = Number.isFinite(percent) && percent > 0 ? percent / 100 : 1.15;
+  return Math.min(6, Math.max(0.5, ratio));
+}
+
+function pickChromeTtsVoice(voices, wantChinese) {
+  if (!wantChinese) {
+    return voices.find((v) => /en[-_]US/i.test(v.lang || '') && /Google/i.test(v.voiceName || ''))
+      || voices.find((v) => /^en/i.test(v.lang || '')) || null;
+  }
+  return voices.find((v) => /zh[-_]CN/i.test(v.lang || '') && /Google/i.test(v.voiceName || ''))
+    || voices.find((v) => /zh[-_]CN/i.test(v.lang || '') && /Xiaoxiao|Huihui|Yaoyao|Kangkang/i.test(v.voiceName || ''))
+    || voices.find((v) => /zh[-_]CN/i.test(v.lang || ''))
+    || voices.find((v) => /^zh/i.test(v.lang || ''))
+    || null;
+}
+
+function speakWithChromeTts(text, message, interrupt = false) {
+  return new Promise((resolve) => {
+    if (!chrome.tts?.speak) {
+      resolve({ ok: false, reason: 'chrome-tts-unavailable' });
+      return;
+    }
+    try {
+      chrome.tts.getVoices((voices) => {
+        const options = {
+          enqueue: !interrupt,
+          volume: Math.min(1, Math.max(0, Number(message.volume) || 0)),
+          rate: chromeTtsRate(message.rate)
+        };
+        const voice = pickChromeTtsVoice(Array.isArray(voices) ? voices : [], CJK_CHAR_RE.test(text));
+        if (voice?.voiceName) options.voiceName = voice.voiceName;
+
+        let settled = false;
+        const done = (ok) => {
+          if (settled) return;
+          settled = true;
+          resolve({ ok, engine: 'chrome-tts' });
+        };
+        options.onEvent = (event) => {
+          if (event.type === 'end') done(true);
+          else if (['error', 'interrupted', 'cancelled'].includes(event.type)) done(false);
+        };
+        if (interrupt) chrome.tts.stop();
+        chrome.tts.speak(text, options);
+        // 个别平台不发 end 事件：兜底超时 resolve，避免消息通道悬挂。
+        setTimeout(() => done(true), 30000);
+      });
+    } catch (error) {
+      resolve({ ok: false, reason: String(error?.message || error) });
+    }
+  });
+}
+
+// 按语言路由：含中文（含中英混合）走 chrome.tts，纯英文走 Edge-TTS。
+function dispatchSpeak(text, message, interrupt = false) {
+  if (CJK_CHAR_RE.test(text)) return speakWithChromeTts(text, message, interrupt);
+  return speakEdgeTts(text, message, interrupt);
 }
 
 async function ensureOffscreenDocument() {
@@ -551,7 +618,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'DSM_PREVIEW_TTS') {
     const text = sanitizeSpeechText(message.text || '币安 Binance 华语 发推啦', true);
     if (!text) { sendResponse({ ok: false, reason: 'empty' }); return; }
-    speakEdgeTts(text, message, true)
+    dispatchSpeak(text, message, true)
       .then(sendResponse)
       .catch((error) => sendResponse({ ok: false, reason: String(error?.message || error) }));
     return true;
@@ -567,7 +634,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const previous = recentSpeech.get(key) || 0;
   if (now - previous < DEDUPE_MS) { sendResponse({ ok: true, deduped: true }); return; }
   recentSpeech.set(key, now);
-  speakEdgeTts(text, message, false)
+  dispatchSpeak(text, message, false)
     .then(sendResponse)
     .catch((error) => sendResponse({ ok: false, reason: String(error?.message || error) }));
   return true;
