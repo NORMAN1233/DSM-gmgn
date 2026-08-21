@@ -1,0 +1,60 @@
+{
+  "manifest_version": 3,
+  "name": "DSM-gmgn",
+  "version": "2.6.8",
+  "description": "GMGN 小工具合集：WebSocket 推特监控、Cloudflare Edge-TTS 博主播报、跨屏划词/高亮关键词真实搜索。",
+  "permissions": [
+    "storage",
+    "scripting",
+    "offscreen"
+  ],
+  "host_permissions": [
+    "https://gmgn.ai/*",
+    "https://*.gmgn.ai/*",
+    "https://cloudflare-edge-tts.tech-melon.workers.dev/*"
+  ],
+  "icons": {
+    "128": "gmgn-logo.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://gmgn.ai/*",
+        "https://*.gmgn.ai/*"
+      ],
+      "js": [
+        "twitter-inject.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "https://gmgn.ai/*",
+        "https://*.gmgn.ai/*"
+      ],
+      "css": [
+        "styles.css"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "DSM-gmgn",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "128": "gmgn-logo.png"
+    }
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; connect-src https://cloudflare-edge-tts.tech-melon.workers.dev; media-src 'self' blob:; object-src 'self';"
+  }
+}

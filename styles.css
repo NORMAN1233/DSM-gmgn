@@ -1,0 +1,182 @@
+/* ============================================================
+   DSM-gmgn 页面内 UI
+   圆形倒计时参考 C:\repo；配色对齐 DataStorm。
+   原则：尽量轻量，不阻塞页面、不扫描全页 DOM。
+   ============================================================ */
+:root {
+  --dsm-blue: #baff32;
+  --dsm-green: #49dfc4;
+  --dsm-red: #ff5969;
+  --dsm-amber: #ffc451;
+  --dsm-ink: #eef8f5;
+  --dsm-muted: #718989;
+  --dsm-line: #1d3032;
+  --dsm-bg: rgba(7, 16, 20, .96);
+}
+
+.dsm-hidden {
+  display: none !important;
+}
+
+/* ---------- 圆形倒计时 ---------- */
+#dsm-decision-circle {
+  position: fixed;
+  z-index: 2147483646;
+  top: 20px;
+  right: 20px;
+  width: 120px;
+  height: 120px;
+  min-width: 60px;
+  min-height: 60px;
+  max-width: 400px;
+  max-height: 400px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+  box-sizing: border-box;
+  touch-action: none;
+  box-shadow: 0 0 18px rgba(255, 89, 105, .55);
+  opacity: 1;
+  transition: background .2s ease, box-shadow .2s ease, transform .18s ease, opacity .18s ease;
+  font-family: "Avenir Next", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+}
+
+/* 隐藏态：透明 + 缩小 + 不响应指针，用过渡实现丝滑显隐；
+   退出更快（120ms），进入稍缓（180ms），切页无“卡住”感 */
+#dsm-decision-circle.dsm-circle-hidden {
+  opacity: 0;
+  transform: scale(.55);
+  pointer-events: none;
+  transition: background .2s ease, box-shadow .2s ease, transform .12s ease, opacity .12s ease;
+}
+
+#dsm-decision-circle:active {
+  cursor: grabbing;
+}
+
+#dsm-decision-circle.dsm-circle-red {
+  background: radial-gradient(circle at 30% 30%, #ff7a88, #c22a3d 70%);
+  box-shadow: 0 0 18px rgba(255, 89, 105, .7);
+}
+
+#dsm-decision-circle.dsm-circle-green {
+  background: radial-gradient(circle at 30% 30%, #7affdf, #2fb89e 70%);
+  box-shadow: 0 0 18px rgba(73, 223, 196, .7);
+}
+
+#dsm-circle-text {
+  font-size: 34px;
+  font-weight: 800;
+  color: #fff;
+  line-height: 1;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, .35);
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+}
+
+#dsm-resize-dot {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, .75);
+  box-shadow: 0 0 6px rgba(0, 0, 0, .45);
+  cursor: nwse-resize;
+  z-index: 1;
+}
+
+/* ---------- 非阻塞休息提醒 ---------- */
+#dsm-rest-toast {
+  position: fixed;
+  top: 16px;
+  right: 20px;
+  z-index: 2147483647;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(340px, calc(100vw - 32px));
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 196, 81, .55);
+  border-radius: 4px;
+  background: rgba(7, 16, 20, .96);
+  box-shadow: 0 10px 36px rgba(0, 0, 0, .55);
+  color: var(--dsm-ink);
+  font-family: "Avenir Next", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  pointer-events: auto;
+  box-sizing: border-box;
+}
+
+#dsm-rest-toast.dsm-hidden {
+  display: none !important;
+}
+
+.dsm-rest-icon {
+  font-size: 20px;
+  line-height: 1;
+}
+
+.dsm-rest-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.dsm-rest-copy b,
+.dsm-rest-copy small {
+  display: block;
+}
+
+.dsm-rest-copy b {
+  font-size: 12px;
+  color: #d8e9e4;
+}
+
+.dsm-rest-copy small {
+  margin-top: 3px;
+  color: var(--dsm-muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+#dsm-rest-btn {
+  flex: none;
+  border: 1px solid #456526;
+  background: #172410;
+  color: var(--dsm-blue);
+  font-size: 11px;
+  padding: 6px 10px;
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+#dsm-rest-btn:hover {
+  background: #203116;
+  border-color: var(--dsm-blue);
+}
+
+/* ---------- 已看 CA 标记 ---------- */
+.gmgn-viewed-ca-card-viewed {
+  border-left-color: transparent !important;
+}
+
+.gmgn-viewed-ca-card-viewed::before,
+.gmgn-viewed-ca-card-viewed::after {
+  display: none !important;
+}
+
+.gmgn-viewed-ca-card-viewed [class*="border-l"],
+.gmgn-viewed-ca-card-viewed [style*="border-left"] {
+  border-left-color: transparent !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #dsm-decision-circle,
+  #dsm-rest-toast {
+    transition: none !important;
+  }
+}

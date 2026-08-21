@@ -1,0 +1,110 @@
+﻿/* DSM-gmgn custom styles on top of DataStorm popup theme */
+.gmgn-logo {
+  width: auto;
+  height: 30px;
+  background: #fff;
+  border: 1px solid #24383a;
+  border-radius: 4px;
+  box-shadow: 0 0 8px rgba(0, 0, 0, .4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+}
+.gmgn-logo img {
+  width: auto;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+.dsm-entry-code {
+  background: var(--blue);
+  color: #08100a;
+  font-size: 16px;
+}
+.dsm-data-card {
+  margin-top: 8px;
+}
+.dsm-count-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin: 12px 0 10px;
+  padding: 10px 12px;
+  border: 1px solid #203638;
+  background: #091315;
+}
+.dsm-count-line span {
+  color: #718989;
+  font-size: 9px;
+}
+.dsm-count-line b {
+  color: var(--blue);
+  font: 400 24px/1 "SFMono-Regular", Consolas, monospace;
+}
+.dsm-clear {
+  margin-top: 0;
+}
+.dsm-field-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #203638;
+}
+.dsm-field {
+  display: block;
+  padding: 8px;
+  border: 1px solid #243b3d;
+  background: #0d191a;
+}
+.dsm-field span {
+  display: block;
+  margin-bottom: 6px;
+  color: #8da19e;
+  font-size: 9px;
+}
+.dsm-field select,
+.dsm-field input[type="number"] {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid #294143;
+  border-radius: 0;
+  background: #071014;
+  color: #d8e9e4;
+  font-size: 10px;
+  outline: 0;
+}
+.dsm-field input[type="number"] {
+  font-family: "Fusion Pixel SC", monospace;
+}
+.dsm-about-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid #203638;
+  background: #091315;
+  color: #718989;
+  font-size: 9px;
+}
+.dsm-about-row b {
+  color: #d8e9e4;
+  font-size: 10px;
+}
+.dsm-about-row:first-of-type {
+  margin-top: 12px;
+}
+.message {
+  min-height: 14px;
+  margin-top: 8px;
+  color: var(--green);
+  text-align: center;
+  font-size: 9px;
+}
+
+.dsm-voice-volume { margin-top: 12px; }
+.dsm-voice-volume label > span b { color: #d9e9e4; font-size: 9px; }
+.dsm-voice-volume input[type="range"]:disabled { opacity: .35; cursor: not-allowed; }
