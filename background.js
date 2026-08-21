@@ -1,6 +1,6 @@
 'use strict';
 
-// DSM-gmgn v2.6.8 — GMGN WSS monitoring + Cloudflare Edge-TTS playback.
+// DSM-gmgn v2.6.9 — GMGN WSS monitoring + Cloudflare Edge-TTS playback.
 const recentSpeech = new Map();
 const DEDUPE_MS = 60 * 1000;
 let lastSearchTargetTabId = null;
@@ -21,18 +21,33 @@ function pruneRecent(now) {
   }
 }
 
+const GREEK_CAPS_TO_LATIN = {
+  'Α': 'A', 'Β': 'B', 'Ε': 'E', 'Ζ': 'Z', 'Η': 'H', 'Ι': 'I', 'Κ': 'K',
+  'Μ': 'M', 'Ν': 'N', 'Ο': 'O', 'Ρ': 'P', 'Τ': 'T', 'Υ': 'Y', 'Χ': 'X',
+  // Ξ（Xi，三横）在花式昵称里视觉上替代的是 E（如 DΞGEN=DEGEN），不是 X。
+  'Ξ': 'E', 'Λ': 'A'
+};
+
 function normalizeLatinNamePronunciation(value) {
   let text = String(value || '');
+  // Stylized names often swap Greek capitals for Latin lookalikes (e.g.
+  // "DΞGEN"). Normalize them first or the voice spells the odd characters.
+  text = text.replace(/[ΑΒΕΖΗΙΚΜΝΟΡΤΥΧΞΛ]/g, (ch) => GREEK_CAPS_TO_LATIN[ch] || ch);
   // Stylized display names such as "D E G E N" make Edge-TTS announce every
   // letter. Join runs of 3+ isolated letters before applying normal casing.
   text = text.replace(
     /(^|[\s，、])((?:[A-Za-z][\s._-]+){2,}[A-Za-z])(?=$|[\s，。！？、,.!?：:；;])/g,
     (match, prefix, letters) => `${prefix}${letters.replace(/[^A-Za-z]/g, '')}`
   );
-  // Azure/Edge voices commonly treat ALL-CAPS words as acronyms. Title casing
-  // long Latin tokens makes blogger names sound like words instead of spelling
-  // them one character at a time. Short forms such as AI remain untouched.
-  return text.replace(/\b[A-Z]{3,}\b/g, (word) => `${word[0]}${word.slice(1).toLowerCase()}`);
+  // Chinese voices mishandle bare CJK-Latin junctions ("PEPE king发推啦");
+  // keep a single space so each script segments and reads as words.
+  text = text.replace(/([A-Za-z])([\u3400-\u9FFF])/g, '$1 $2')
+    .replace(/([\u3400-\u9FFF])([A-Za-z])/g, '$1 $2');
+  // Azure/Edge voices commonly treat ALL-CAPS words as acronyms and spell them
+  // letter by letter. Title-case caps tokens of 3+ chars (digits allowed after
+  // the first letter, e.g. FOMO3 → Fomo3) so they sound like words. Short forms
+  // such as AI remain untouched.
+  return text.replace(/\b[A-Z][A-Z0-9]{2,}\b/g, (word) => `${word[0]}${word.slice(1).toLowerCase()}`);
 }
 
 function sanitizeSpeechText(value, keepPauses = false) {
@@ -140,6 +155,8 @@ async function sendEdgeTtsCommand(payload = {}, timeoutMs = 20000, retry = true)
 async function speakEdgeTts(text, message, preview = false) {
   const clean = sanitizeSpeechText(text, true);
   if (!clean) return { ok: false, reason: 'empty' };
+  // 实测排查入口：Service Worker 控制台可见最终送进 TTS 的文本。
+  console.debug('[DSM-TTS]', JSON.stringify(clean), preview ? '(preview)' : '');
   return sendEdgeTtsCommand({
     text: clean,
     voice: normalizeEdgeVoice(message.voiceName),

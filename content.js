@@ -657,7 +657,22 @@
     lastSelectionSearch: { query: '', at: 0 },
     BODY_SELECTOR: 'div.cursor-text.select-text',
     MAX_SEEN: 800,
-    OLD_TWEET_SECONDS: 12
+    OLD_TWEET_SECONDS: 12,
+    // 用户在 GMGN 给博主设置的自定义备注：小写 @handle → 备注文本。
+    // 备注只存在于页面 DOM（内联橙色），WS 帧里拿不到，需从卡片头部抓取缓存。
+    remarkMap: new Map(),
+    REMARK_STORAGE_KEY: 'dsmTwitterRemarksV1',
+    REMARK_MAX: 500,
+    // 小写昵称 → 小写 handle：WS 帧里的 id/tw 都对不上时的第三路反查。
+    nickToHandleMap: new Map(),
+    NICK_MAP_MAX: 500,
+    // 两击删除投票：handle → { text, firstAt }，防 React 过渡态误删备注。
+    pendingForgetVotes: new Map(),
+    remarkPersistTimer: null,
+    remarksLoaded: false,
+    lastRemarkSignature: '',
+    REMARK_WAIT_MS: 1200,
+    REMARK_POLL_MS: 160
   };
 
   function cleanText(value) {
@@ -748,6 +763,184 @@
     return '';
   }
 
+  // GMGN 只把用户自定义备注渲染成内联橙色 rgb(248,185,81)；普通昵称没有这个
+  // 颜色，编辑图标则无论有无备注都在。颜色是区分备注与昵称的唯一可靠信号。
+  function isRemarkOrange(span) {
+    if (!span) return false;
+    if (/248\s*,\s*185\s*,\s*81/.test(String(span.style?.color || ''))) return true;
+    try {
+      const match = String(getComputedStyle(span).color || '').match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+      return !!match && Math.abs(Number(match[1]) - 248) <= 12
+        && Math.abs(Number(match[2]) - 185) <= 12
+        && Math.abs(Number(match[3]) - 81) <= 12;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function schedulePersistRemarks() {
+    if (social.remarkPersistTimer !== null) clearTimeout(social.remarkPersistTimer);
+    social.remarkPersistTimer = setTimeout(() => {
+      social.remarkPersistTimer = null;
+      if (social.remarkMap.size > social.REMARK_MAX) {
+        const drop = social.remarkMap.size - Math.floor(social.REMARK_MAX * 0.75);
+        let removed = 0;
+        for (const key of social.remarkMap.keys()) {
+          social.remarkMap.delete(key);
+          removed += 1;
+          if (removed >= drop) break;
+        }
+      }
+      try {
+        chrome.storage.local.set({ [social.REMARK_STORAGE_KEY]: Object.fromEntries(social.remarkMap) }).catch(() => {});
+      } catch (error) {}
+    }, 500);
+  }
+
+  function rememberRemark(handleLower, remark) {
+    const text = cleanText(remark).slice(0, 80);
+    if (!handleLower || !text) return;
+    if (social.remarkMap.get(handleLower) === text) return;
+    // 先 delete 再 set 刷新 Map 插入顺序，超限裁剪时保留最近使用的备注。
+    social.remarkMap.delete(handleLower);
+    social.remarkMap.set(handleLower, text);
+    schedulePersistRemarks();
+  }
+
+  function forgetRemarkOnce(handleLower, observedText) {
+    // 两击确认：连续两次扫描（间隔 ≥3s）看到同一非橙色名字且与缓存不同才删。
+    // React 过渡态短暂显示原昵称、或备注晚一帧刷入时都不会误删有效备注。
+    if (!handleLower || !social.remarkMap.has(handleLower)) return;
+    if (observedText === social.remarkMap.get(handleLower)) return;
+    const now = Date.now();
+    const prev = social.pendingForgetVotes.get(handleLower);
+    if (prev && prev.text === observedText) {
+      if (now - prev.firstAt >= 3000) {
+        social.remarkMap.delete(handleLower);
+        social.pendingForgetVotes.delete(handleLower);
+        schedulePersistRemarks();
+        console.debug('[DSM remark] 已删除缓存备注:', handleLower);
+      }
+      return;
+    }
+    social.pendingForgetVotes.set(handleLower, { text: observedText, firstAt: now });
+  }
+
+  function rememberNickPair(nickText, handleLower) {
+    const nick = cleanText(nickText).toLowerCase();
+    if (!nick || !handleLower || nick.startsWith('@')) return;
+    if (social.nickToHandleMap.get(nick) === handleLower) return;
+    if (social.nickToHandleMap.size >= social.NICK_MAP_MAX) {
+      const drop = social.nickToHandleMap.size - Math.floor(social.NICK_MAP_MAX * 0.75);
+      let removed = 0;
+      for (const key of social.nickToHandleMap.keys()) {
+        social.nickToHandleMap.delete(key);
+        removed += 1;
+        if (removed >= drop) break;
+      }
+    }
+    social.nickToHandleMap.set(nick, handleLower);
+  }
+
+  // 备注是 GMGN 的内联橙色样式，颜色本身是唯一可靠信号：不再要求特定类名，
+  // 避免备注 span 与普通昵称类名不一致时永远抓不到。跳过推文正文里的高亮词。
+  function findOrangeRemarkSpan(scope) {
+    for (const span of scope.querySelectorAll('span')) {
+      if (span.closest(social.BODY_SELECTOR)) continue;
+      const text = cleanText(span.textContent);
+      if (!text || text.length > 80) continue;
+      if (isRemarkOrange(span)) return span;
+    }
+    return null;
+  }
+
+  function captureTwitterRemark(handleAnchor, scope) {
+    if (!handleAnchor || !scope?.contains?.(handleAnchor)) return;
+    let handleLower = '';
+    try {
+      const url = new URL(String(handleAnchor.getAttribute('href') || ''), location.href);
+      const parts = url.pathname.split('/').filter(Boolean);
+      if (parts.length === 1) handleLower = parts[0].toLowerCase();
+    } catch (error) {
+      return;
+    }
+    if (!handleLower) return;
+
+    let node = handleAnchor.parentElement;
+    for (let depth = 0; node && depth < 10; depth += 1, node = node.parentElement) {
+      if (!scope.contains(node)) break;
+      const handles = profileHandleAnchors(node);
+      if (handles.length > 1) break; // 越过卡片进入列表容器，避免误配他人
+
+      // 命中橙色即写入缓存；从最内层向外找，优先取离 handle 最近的那个。
+      const orange = findOrangeRemarkSpan(node);
+      if (orange) {
+        social.pendingForgetVotes.delete(handleLower);
+        rememberRemark(handleLower, orange.textContent);
+        return;
+      }
+
+      // 未命中橙色：仅在带编辑图标的“已渲染完”头部里做昵称配对与删除投票。
+      if (!node.querySelector?.('svg[data-icon="IconEdit16pxRegular"]')) continue;
+      const candidates = authorCandidates(node);
+      if (candidates.length !== 1 || handles.length !== 1 || handles[0] !== handleAnchor) continue;
+      rememberNickPair(candidates[0].textContent, handleLower);
+      forgetRemarkOnce(handleLower, cleanText(candidates[0].textContent));
+      return;
+    }
+  }
+
+  function loadTwitterRemarks() {
+    if (social.remarksLoaded) return;
+    social.remarksLoaded = true;
+    try {
+      chrome.storage.local.get([social.REMARK_STORAGE_KEY]).then((data) => {
+        const stored = data?.[social.REMARK_STORAGE_KEY];
+        if (!stored || typeof stored !== 'object') return;
+        for (const [handle, remark] of Object.entries(stored)) {
+          if (typeof remark === 'string' && cleanText(remark)) {
+            social.remarkMap.set(String(handle).toLowerCase(), cleanText(remark));
+          }
+        }
+      }).catch(() => {});
+    } catch (error) {}
+  }
+
+  // React 卡片晚于 DOMContentLoaded 挂载，且橙色备注常在首帧后才经属性变更刷入
+  // （childList observer 感知不到）。低频全量扫描兜底，保证缓存始终新鲜。
+  function sweepRemarks() {
+    if (!document.body) return;
+    for (const anchor of profileHandleAnchors(document)) captureTwitterRemark(anchor, document.body);
+    const signature = JSON.stringify(Array.from(social.remarkMap.entries()).sort(([a], [b]) => (a < b ? -1 : 1)));
+    if (signature !== social.lastRemarkSignature) {
+      social.lastRemarkSignature = signature;
+      console.debug('[DSM remark] 缓存更新:', Object.fromEntries(social.remarkMap));
+    }
+  }
+
+  // 控制台诊断：默认控制台上下文是页面主世界，需切到本扩展上下文后调用。
+  try {
+    window.__dsmRemarks = () => ({
+      remarks: Object.fromEntries(social.remarkMap),
+      nickPairs: Object.fromEntries(social.nickToHandleMap)
+    });
+  } catch (error) {}
+
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local' || !changes[social.REMARK_STORAGE_KEY]) return;
+    // 其他标签页的写入整体采纳；本页若更新，靠后续卡片渲染重新捕获自愈。
+    const next = changes[social.REMARK_STORAGE_KEY].newValue;
+    social.remarkMap.clear();
+    social.pendingForgetVotes.clear();
+    if (next && typeof next === 'object') {
+      for (const [handle, remark] of Object.entries(next)) {
+        if (typeof remark === 'string' && cleanText(remark)) {
+          social.remarkMap.set(String(handle).toLowerCase(), cleanText(remark));
+        }
+      }
+    }
+  });
+
   function findAuthorInTweetCard(card) {
     if (!card?.querySelectorAll) return '';
 
@@ -808,6 +1001,7 @@
       // display name from the same compact header. This covers both GMGN layouts
       // supplied by the user (Arbital same-row handle and DEGEN NEWS second-row handle).
       if (handles.length === 1) {
+        captureTwitterRemark(handles[0], node);
         const author = findAuthorNearHandle(handles[0], node);
         if (author) return { card: node, author, ageSeconds: findTweetAgeSeconds(node) };
       }
@@ -835,10 +1029,43 @@
     return `tweet:${hashText(`${context.author}\n${bodyText}`)}`;
   }
 
+  function normalizeHandleKey(value) {
+    return String(value || '').trim().toLowerCase().replace(/^@+/, '');
+  }
+
+  // WS 帧里 id/tw 字段的实际内容不受我们控制（可能是 handle 也可能是数字 ID），
+  // 匹配备注时把所有候选 key 都试一遍，再用昵称反查表兜底。
+  function remarkCandidateKeys(trigger) {
+    const keys = [];
+    for (const raw of [trigger?.id, trigger?.tw]) {
+      const key = normalizeHandleKey(raw);
+      if (key && !keys.includes(key)) keys.push(key);
+    }
+    const nickKey = cleanText(trigger?.name).toLowerCase();
+    const viaNick = nickKey ? social.nickToHandleMap.get(nickKey) : '';
+    if (viaNick && !keys.includes(viaNick)) keys.push(viaNick);
+    return keys;
+  }
+
+  // 命中 GMGN 备注返回可播报名；空串表示未命中。
+  function resolveSpokenName(trigger) {
+    for (const key of remarkCandidateKeys(trigger)) {
+      const hit = sanitizeSpokenAuthor(social.remarkMap.get(key));
+      if (hit) return hit;
+    }
+    return '';
+  }
+
   function buildTwitterAnnouncement(triggers) {
     const counts = new Map();
     for (const trigger of Array.isArray(triggers) ? triggers : []) {
-      const spokenName = sanitizeSpokenAuthor(trigger?.name || trigger?.id);
+      let spokenName = resolveSpokenName(trigger);
+      if (spokenName) {
+        console.debug('[DSM speak] 备注命中 →', spokenName, '| key:', remarkCandidateKeys(trigger).join(','));
+      } else {
+        spokenName = sanitizeSpokenAuthor(trigger?.name || trigger?.id);
+        if (spokenName) console.debug('[DSM speak] 无备注，回退昵称 →', spokenName, '| key:', remarkCandidateKeys(trigger).join(','));
+      }
       if (!spokenName) continue;
       counts.set(spokenName, (counts.get(spokenName) || 0) + 1);
     }
@@ -849,9 +1076,7 @@
     return labels.length > 3 ? `${labels.join('、')}一起发推啦` : `${labels.join('、')} 发推啦`;
   }
 
-  function speakTwitterAnnouncement(triggers, tweetKey) {
-    const text = buildTwitterAnnouncement(triggers);
-    if (!settings.twitterVoiceEnabled || !text) return;
+  function sendSpeakMessage(text, tweetKey) {
     try {
       chrome.runtime.sendMessage({
         type: 'DSM_SPEAK_TWITTER_AUTHOR',
@@ -865,6 +1090,28 @@
     } catch (error) {
       // AI TTS failure must never block or alter GMGN page behavior.
     }
+  }
+
+  function speakTwitterAnnouncement(triggers, tweetKey) {
+    if (!settings.twitterVoiceEnabled) return;
+    // 新推文卡片头部常比 WS 帧晚渲染，而备注只存在于页面 DOM：立即播必然
+    // 错过刚发推博主的备注。先短暂轮询补抓，全部命中立刻播，最多等 ~1.2s。
+    const list = Array.isArray(triggers) ? triggers : [];
+    const deadline = Date.now() + social.REMARK_WAIT_MS;
+    const unresolved = () => list.some((trigger) => !resolveSpokenName(trigger));
+    const attempt = () => {
+      if (!social.started || !settings.twitterVoiceEnabled || !isMasterOn()) return;
+      if (unresolved() && Date.now() < deadline) {
+        sweepRemarks();
+        if (unresolved()) {
+          setTimeout(attempt, social.REMARK_POLL_MS);
+          return;
+        }
+      }
+      const text = buildTwitterAnnouncement(list);
+      if (text) sendSpeakMessage(text, tweetKey);
+    };
+    attempt();
   }
 
   function handleTwitterWsMessage(event) {
@@ -1305,7 +1552,16 @@
     social.armedAt = Date.now() + 1200;
     social.ac = new AbortController();
 
+    loadTwitterRemarks();
+
     if (settings.twitterVoiceEnabled) {
+      sweepRemarks();
+      if (social.scanTimer === null) {
+        social.scanTimer = setInterval(() => {
+          if (document.visibilityState !== 'visible') return;
+          sweepRemarks();
+        }, 5000);
+      }
       window.addEventListener('DSM_TWITTER_WS_MSG_RECEIVED', handleTwitterWsMessage, { signal: social.ac.signal });
     }
 

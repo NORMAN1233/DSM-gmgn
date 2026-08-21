@@ -60,6 +60,9 @@
 
       const triggers = Array.from(authors.values());
       if (!triggers.length) return;
+      // 诊断用：页面控制台直接输入 __dsmLastWsSample 可查看最近一帧的原始
+      // 字段（id/tw/name 到底是什么），用于排查备注匹配不上的问题。
+      try { window.__dsmLastWsSample = triggers; } catch (error) {}
       const fingerprint = stableIds.length
         ? stableIds.sort().join('|')
         : JSON.stringify(payload.data);
