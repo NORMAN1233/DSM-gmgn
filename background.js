@@ -114,7 +114,37 @@ function pickChromeTtsVoice(voices, wantChinese) {
     || null;
 }
 
-function speakWithChromeTts(text, message, interrupt = false) {
+const LATIN_CHAR_RE = /[A-Za-z]/;
+
+// 把清洗后的播报文本拆成中/英连续段：CJK 归中文段、字母归英文段；
+// 数字/空格/标点为中性字符，跟随前一段（句首中性字符跟随下一段）。
+function splitLanguageRuns(text) {
+  const chars = Array.from(String(text || ''));
+  let lastKind = null;
+  const kinds = chars.map((ch) => {
+    if (CJK_CHAR_RE.test(ch)) lastKind = 'zh';
+    else if (LATIN_CHAR_RE.test(ch)) lastKind = 'en';
+    return lastKind;
+  });
+  const resolved = new Array(kinds.length);
+  let next = null;
+  for (let i = kinds.length - 1; i >= 0; i -= 1) {
+    if (kinds[i]) next = kinds[i];
+    resolved[i] = kinds[i] ?? next;
+  }
+  const runs = [];
+  for (let i = 0; i < chars.length; i += 1) {
+    const kind = resolved[i];
+    const tail = runs[runs.length - 1];
+    if (tail && tail.kind === kind) tail.text += chars[i];
+    else runs.push({ kind: kind ?? 'zh', text: chars[i] });
+  }
+  return runs
+    .map((run) => ({ kind: run.kind, text: run.text.trim() }))
+    .filter((run) => run.text);
+}
+
+function speakChromeSegment(text, message, wantChinese) {
   return new Promise((resolve) => {
     if (!chrome.tts?.speak) {
       resolve({ ok: false, reason: 'chrome-tts-unavailable' });
@@ -123,27 +153,26 @@ function speakWithChromeTts(text, message, interrupt = false) {
     try {
       chrome.tts.getVoices((voices) => {
         const options = {
-          enqueue: !interrupt,
+          enqueue: false,
           volume: Math.min(1, Math.max(0, Number(message.volume) || 0)),
           rate: chromeTtsRate(message.rate)
         };
-        const voice = pickChromeTtsVoice(Array.isArray(voices) ? voices : [], CJK_CHAR_RE.test(text));
+        const voice = pickChromeTtsVoice(Array.isArray(voices) ? voices : [], wantChinese);
         if (voice?.voiceName) options.voiceName = voice.voiceName;
 
         let settled = false;
         const done = (ok) => {
           if (settled) return;
           settled = true;
-          resolve({ ok, engine: 'chrome-tts' });
+          resolve({ ok });
         };
         options.onEvent = (event) => {
           if (event.type === 'end') done(true);
           else if (['error', 'interrupted', 'cancelled'].includes(event.type)) done(false);
         };
-        if (interrupt) chrome.tts.stop();
         chrome.tts.speak(text, options);
-        // 个别平台不发 end 事件：兜底超时 resolve，避免消息通道悬挂。
-        setTimeout(() => done(true), 30000);
+        // 个别平台不发 end 事件：按字数估算兜底超时，避免接力链卡死。
+        setTimeout(() => done(true), Math.min(30000, 4000 + text.length * 250));
       });
     } catch (error) {
       resolve({ ok: false, reason: String(error?.message || error) });
@@ -151,10 +180,49 @@ function speakWithChromeTts(text, message, interrupt = false) {
   });
 }
 
-// 按语言路由：含中文（含中英混合）走 chrome.tts，纯英文走 Edge-TTS。
+function stopEdgeTtsPlayback() {
+  // 空 text + interrupt：offscreen 先停掉当前播放并清空队列，再因空文本返回。
+  sendEdgeTtsCommand({
+    text: '', voice: 'en-US-AvaMultilingualNeural', rate: '+0%', pitch: '+0%', volume: 0, interrupt: true
+  }, 5000, false).catch(() => {});
+}
+
+// 中英分段接力播放：中文段用系统中文语音(chrome.tts)，英文段用 Edge-TTS 的
+// Ava 多语言语音(实测纯英文路径稳定且发音纯正)。新播报会使旧的接力链失效。
+let speakJobSeq = 0;
+
+async function speakSequential(text, message, interrupt = false) {
+  const mySeq = ++speakJobSeq;
+  const segments = splitLanguageRuns(text);
+  if (!segments.length) return { ok: false, reason: 'empty' };
+
+  if (interrupt) {
+    try { chrome.tts?.stop?.(); } catch (error) {}
+    stopEdgeTtsPlayback();
+  }
+
+  let spokeAny = false;
+  for (const seg of segments) {
+    if (mySeq !== speakJobSeq) return { ok: false, reason: 'superseded' };
+    if (seg.kind === 'en') {
+      const result = await sendEdgeTtsCommand({
+        text: seg.text,
+        voice: 'en-US-AvaMultilingualNeural',
+        rate: normalizeEdgeRate(message.rate),
+        pitch: '+0%',
+        volume: Math.min(1, Math.max(0, Number(message.volume) || 0))
+      }, 20000);
+      spokeAny = spokeAny || !!result?.ok;
+    } else {
+      const result = await speakChromeSegment(seg.text, message, true);
+      spokeAny = spokeAny || !!result?.ok;
+    }
+  }
+  return { ok: spokeAny, engine: 'hybrid', segments: segments.length };
+}
+
 function dispatchSpeak(text, message, interrupt = false) {
-  if (CJK_CHAR_RE.test(text)) return speakWithChromeTts(text, message, interrupt);
-  return speakEdgeTts(text, message, interrupt);
+  return speakSequential(text, message, interrupt);
 }
 
 async function ensureOffscreenDocument() {
