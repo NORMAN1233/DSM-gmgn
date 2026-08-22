@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "DSM-gmgn",
-  "version": "2.6.9",
+  "version": "2.7.0",
   "description": "GMGN 小工具合集：WebSocket 推特监控、Cloudflare Edge-TTS 博主播报、跨屏划词/高亮关键词真实搜索。",
   "permissions": [
     "storage",

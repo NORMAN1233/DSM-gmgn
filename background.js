@@ -1,12 +1,32 @@
 'use strict';
 
-// DSM-gmgn v2.6.9 — GMGN WSS monitoring + Cloudflare Edge-TTS playback.
+// DSM-gmgn v2.7.0 — GMGN WSS monitoring + Cloudflare Edge-TTS playback.
 const recentSpeech = new Map();
 const DEDUPE_MS = 60 * 1000;
 let lastSearchTargetTabId = null;
 let creatingOffscreen = null;
 let offscreenReady = false;
 let ttsRequestSeq = 0;
+const LOG_KEY = 'dsmRuntimeLogsV1';
+const LOG_LIMIT = 120;
+let logWriteQueue = Promise.resolve();
+
+function appendRuntimeLog(entry = {}) {
+  const record = {
+    at: Date.now(),
+    level: ['success', 'warn', 'error', 'info'].includes(entry.level) ? entry.level : 'info',
+    category: String(entry.category || '系统').slice(0, 20),
+    title: String(entry.title || '运行事件').slice(0, 80),
+    detail: String(entry.detail || '').slice(0, 240)
+  };
+  // 串行、限量写入；日志只在关键事件发生时记录，不增加页面轮询或 DOM 工作。
+  logWriteQueue = logWriteQueue.then(async () => {
+    const data = await chrome.storage.local.get(LOG_KEY);
+    const logs = Array.isArray(data[LOG_KEY]) ? data[LOG_KEY] : [];
+    logs.push(record);
+    await chrome.storage.local.set({ [LOG_KEY]: logs.slice(-LOG_LIMIT) });
+  }).catch(() => {});
+}
 
 const EDGE_TTS_VOICES = new Set([
   'zh-CN-XiaoxiaoNeural',
@@ -542,18 +562,50 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'DSM_CROSS_TAB_GMGN_SEARCH') {
     const query = String(message.query || '').trim().slice(0, 80);
     if (!query) { sendResponse({ ok: false, reason: 'empty-query' }); return; }
-    routeCrossTabSearch(query, sender)
-      .then(sendResponse)
-      .catch((error) => sendResponse({ ok: false, reason: String(error?.message || error || 'route-failed') }));
+    routeCrossTabSearch(query, sender).then((result) => {
+      appendRuntimeLog({
+        level: result?.ok ? 'success' : 'error', category: '跨屏搜索',
+        title: result?.ok ? '关键词已发送' : '关键词发送失败',
+        detail: result?.ok ? query : `${query} · ${result?.reason || '未知原因'}`
+      });
+      sendResponse(result);
+    }).catch((error) => {
+      const reason = String(error?.message || error || 'route-failed');
+      appendRuntimeLog({ level: 'error', category: '跨屏搜索', title: '关键词发送异常', detail: reason });
+      sendResponse({ ok: false, reason });
+    });
     return true;
+  }
+
+  if (message.type === 'DSM_GET_LOGS') {
+    chrome.storage.local.get(LOG_KEY).then((data) => {
+      sendResponse({ ok: true, logs: Array.isArray(data[LOG_KEY]) ? data[LOG_KEY] : [] });
+    }).catch(() => sendResponse({ ok: false, logs: [] }));
+    return true;
+  }
+
+  if (message.type === 'DSM_CLEAR_LOGS') {
+    chrome.storage.local.remove(LOG_KEY).then(() => sendResponse({ ok: true })).catch(() => sendResponse({ ok: false }));
+    return true;
+  }
+
+  if (message.type === 'DSM_ADD_LOG') {
+    appendRuntimeLog(message);
+    sendResponse({ ok: true });
+    return;
   }
 
   if (message.type === 'DSM_PREVIEW_TTS') {
     const text = sanitizeSpeechText(message.text || '币安 Binance 华语 发推啦', true);
     if (!text) { sendResponse({ ok: false, reason: 'empty' }); return; }
-    speakEdgeTts(text, message, true)
-      .then(sendResponse)
-      .catch((error) => sendResponse({ ok: false, reason: String(error?.message || error) }));
+    speakEdgeTts(text, message, true).then((result) => {
+      appendRuntimeLog({ level: result?.ok ? 'success' : 'error', category: '语音试听', title: result?.ok ? '试听播放成功' : '试听播放失败', detail: result?.reason || text });
+      sendResponse(result);
+    }).catch((error) => {
+      const reason = String(error?.message || error);
+      appendRuntimeLog({ level: 'error', category: '语音试听', title: '试听播放异常', detail: reason });
+      sendResponse({ ok: false, reason });
+    });
     return true;
   }
 
@@ -567,8 +619,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const previous = recentSpeech.get(key) || 0;
   if (now - previous < DEDUPE_MS) { sendResponse({ ok: true, deduped: true }); return; }
   recentSpeech.set(key, now);
-  speakEdgeTts(text, message, false)
-    .then(sendResponse)
-    .catch((error) => sendResponse({ ok: false, reason: String(error?.message || error) }));
+  speakEdgeTts(text, message, false).then((result) => {
+    appendRuntimeLog({ level: result?.ok ? 'success' : 'error', category: '推特播报', title: result?.ok ? '播报成功' : '播报失败', detail: result?.ok ? text : `${text} · ${result?.reason || '未知原因'}` });
+    sendResponse(result);
+  }).catch((error) => {
+    const reason = String(error?.message || error);
+    appendRuntimeLog({ level: 'error', category: '推特播报', title: '播报异常', detail: `${text} · ${reason}` });
+    sendResponse({ ok: false, reason });
+  });
   return true;
 });

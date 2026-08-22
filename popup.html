@@ -15,7 +15,7 @@
       <div class="pixel-logo gmgn-logo"><img src="gmgn-logo.svg" alt="GMGN"></div>
       <div>
         <p>GMGN TOOLBOX</p>
-        <h1>DSM-gmgn <small>v2.6.8</small></h1>
+        <h1>DSM-gmgn <small id="headerVersion">v2.7.0</small></h1>
       </div>
       <label class="power"><input id="masterEnabled" type="checkbox" checked><span class="power-track"><span class="power-dot"></span></span></label>
     </header>
@@ -41,7 +41,27 @@
       <p class="screen-label">03 / 系统设置</p>
       <div class="home-menu">
         <button class="primary-entry" data-open="settingsScreen"><span class="entry-code dsm-entry-code">⚙</span><span><strong>系统设置</strong><small>主开关、倒计时、圆形大小与休息参数</small></span><b>›</b></button>
+        <button class="primary-entry" data-open="logsScreen"><span class="entry-code dsm-entry-code">≡</span><span><strong>运行日志</strong><small>查看语音、搜索与设置变更记录</small></span><b>›</b></button>
       </div>
+    </section>
+
+    <!-- 运行日志 -->
+    <section id="logsScreen" class="screen">
+      <button class="back" data-open="homeScreen">‹ 返回主菜单</button>
+      <div class="module-title"><span class="dsm-entry-code">≡</span><div><p>ACTIVITY LOG</p><h2>运行日志</h2></div></div>
+      <div class="log-summary">
+        <div><span>状态</span><strong id="logStatus">正常</strong></div>
+        <div><span>记录数</span><strong id="logCount">0</strong></div>
+      </div>
+      <div class="log-toolbar">
+        <button class="log-filter active" type="button" data-log-filter="all">全部</button>
+        <button class="log-filter" type="button" data-log-filter="success">成功</button>
+        <button class="log-filter" type="button" data-log-filter="error">异常</button>
+        <button id="refreshLogs" type="button">刷新</button>
+      </div>
+      <div id="logList" class="diagnostic-log-list" aria-live="polite"></div>
+      <button id="clearLogs" class="secondary-danger" type="button">清空日志</button>
+      <p id="logsMessage" class="message"></p>
     </section>
 
     <!-- 已看 CA 标记 -->

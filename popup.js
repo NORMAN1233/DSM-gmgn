@@ -4,6 +4,7 @@ const SETTINGS_KEY = 'dsmSettings'; // legacy aggregate, read-only after v2.0.2 
 const SETTING_FIELD_PREFIX = 'dsmSetting_';
 const VIEWED_KEY = 'gmgnViewedCAs';
 const CLEAR_KEY = 'gmgnViewedCAsClearedAt';
+let activeLogFilter = 'all';
 
 const DEFAULT_SETTINGS = {
   dsmEnabled: true,
@@ -79,7 +80,14 @@ const els = {
   socialMessage: $('socialMessage'),
   decisionMessage: $('decisionMessage'),
   settingsMessage: $('settingsMessage'),
-  versionText: $('versionText')
+  versionText: $('versionText'),
+  headerVersion: $('headerVersion'),
+  logStatus: $('logStatus'),
+  logCount: $('logCount'),
+  logList: $('logList'),
+  refreshLogs: $('refreshLogs'),
+  clearLogs: $('clearLogs'),
+  logsMessage: $('logsMessage')
 };
 
 function openScreen(id) {
@@ -88,6 +96,7 @@ function openScreen(id) {
   document.querySelectorAll('.screen').forEach((screen) => screen.classList.remove('active'));
   next.classList.add('active');
   window.scrollTo(0, 0);
+  if (id === 'logsScreen') refreshLogs();
 }
 
 document.querySelectorAll('[data-open]').forEach((button) => {
@@ -128,7 +137,66 @@ async function saveSettings(changed, messageEl) {
     if (SETTING_FIELDS.includes(field)) payload[settingFieldKey(field)] = value;
   }
   if (Object.keys(payload).length) await chrome.storage.local.set(payload);
+  if (Object.keys(changed || {}).length) {
+    chrome.runtime.sendMessage({
+      type: 'DSM_ADD_LOG',
+      level: 'info',
+      category: '设置',
+      title: '设置已更新',
+      detail: Object.keys(changed).join('、')
+    }).catch(() => {});
+  }
   if (messageEl) showMessage(messageEl, '设置已保存');
+}
+
+function formatLogTime(timestamp) {
+  const date = new Date(Number(timestamp) || Date.now());
+  return date.toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+function renderLogs(logs) {
+  const all = Array.isArray(logs) ? logs : [];
+  const visible = activeLogFilter === 'all' ? all : all.filter((item) => item.level === activeLogFilter);
+  els.logCount.textContent = String(all.length);
+  els.logStatus.textContent = all.some((item) => item.level === 'error') ? '有异常' : '正常';
+  els.logList.textContent = '';
+  if (!visible.length) {
+    const empty = document.createElement('p');
+    empty.className = 'log-empty';
+    empty.textContent = activeLogFilter === 'all' ? '暂无运行日志' : '当前筛选下没有记录';
+    els.logList.appendChild(empty);
+    return;
+  }
+  for (const item of visible.slice().reverse()) {
+    const row = document.createElement('article');
+    row.className = `log-item level-${item.level || 'info'}`;
+    const head = document.createElement('header');
+    const category = document.createElement('span');
+    const time = document.createElement('time');
+    category.textContent = item.category || '系统';
+    time.textContent = formatLogTime(item.at);
+    head.append(category, time);
+    const title = document.createElement('strong');
+    title.textContent = item.title || '运行事件';
+    row.append(head, title);
+    if (item.detail) {
+      const detail = document.createElement('small');
+      detail.textContent = item.detail;
+      row.appendChild(detail);
+    }
+    els.logList.appendChild(row);
+  }
+}
+
+async function refreshLogs() {
+  if (!els.logList) return;
+  try {
+    const response = await chrome.runtime.sendMessage({ type: 'DSM_GET_LOGS' });
+    renderLogs(response?.logs || []);
+  } catch (error) {
+    renderLogs([]);
+    showMessage(els.logsMessage, '日志读取失败');
+  }
 }
 
 function applySettings(settings) {
@@ -236,9 +304,11 @@ async function clearViewed() {
 }
 
 async function init() {
+  const version = chrome.runtime.getManifest().version;
   if (els.versionText) {
-    els.versionText.textContent = `v${chrome.runtime.getManifest().version}`;
+    els.versionText.textContent = `v${version}`;
   }
+  if (els.headerVersion) els.headerVersion.textContent = `v${version}`;
 
   const storedSettings = await loadStoredSettings();
   applySettings(storedSettings);
@@ -263,6 +333,20 @@ async function init() {
   });
   els.homeClearButton.addEventListener('click', () => {
     clearViewed().then(() => showMessage(els.homeMessage, '已清空'));
+  });
+
+  document.querySelectorAll('[data-log-filter]').forEach((button) => {
+    button.addEventListener('click', () => {
+      activeLogFilter = button.dataset.logFilter || 'all';
+      document.querySelectorAll('[data-log-filter]').forEach((item) => item.classList.toggle('active', item === button));
+      refreshLogs();
+    });
+  });
+  if (els.refreshLogs) els.refreshLogs.addEventListener('click', refreshLogs);
+  if (els.clearLogs) els.clearLogs.addEventListener('click', async () => {
+    await chrome.runtime.sendMessage({ type: 'DSM_CLEAR_LOGS' });
+    await refreshLogs();
+    showMessage(els.logsMessage, '日志已清空');
   });
 
   refreshViewedCount();
