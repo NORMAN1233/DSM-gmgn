@@ -1,4 +1,4 @@
-# DSM-gmgn v2.7.0 — Edge-TTS 播报版
+# DSM-gmgn v2.7.1 — Edge-TTS 播报版
 
 Chrome 扩展，提供 GMGN 推特监控播报、跨屏搜索、已看 CA 标记和 5 秒决策辅助。
 

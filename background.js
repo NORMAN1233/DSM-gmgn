@@ -1,6 +1,6 @@
 'use strict';
 
-// DSM-gmgn v2.7.0 — GMGN WSS monitoring + Cloudflare Edge-TTS playback.
+// DSM-gmgn v2.7.1 — GMGN WSS monitoring + Cloudflare Edge-TTS playback.
 const recentSpeech = new Map();
 const DEDUPE_MS = 60 * 1000;
 let lastSearchTargetTabId = null;
