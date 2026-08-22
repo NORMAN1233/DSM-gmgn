@@ -6,8 +6,10 @@ Chrome 扩展，提供 GMGN 推特监控播报、跨屏搜索、已看 CA 标记
 
 - 与 [Tech-Melon/GmgnTwitterAudioPlayer](https://github.com/Tech-Melon/GmgnTwitterAudioPlayer) 一致，在 MAIN world 监听 GMGN 的 `twitter_user_monitor_basic` WebSocket。
 - 播报名优先级：**GMGN 自定义备注（橙色）→ 服务端昵称 `u.n` → Twitter ID `u.s`**。
-- 备注从监控卡片 DOM 抓取（内联橙色 `rgb(248,185,81)` 是唯一识别信号），缓存于
-  `chrome.storage.local`（key `dsmTwitterRemarksV1`），跨会话生效；每 5 秒后台扫描一次保持新鲜。
+- 备注从监控卡片 DOM 抓取（内联橙色 `rgb(248,185,81)` 是唯一识别信号），按 handle 独立缓存于
+  `chrome.storage.local`（前缀 `dsmTwitterRemarkV2:`），跨会话生效，并兼容读取旧版
+  `dsmTwitterRemarksV1`；每 5 秒后台扫描一次保持新鲜。普通昵称出现时不会删除已知备注，
+  多个 GMGN 标签页更新不同博主时也不会整表互相覆盖。
   若 WS 帧里的 id/tw 与页面 handle 对不上，还会用「昵称 → handle」映射反查。
 - 新推文卡片常比 WS 帧晚渲染：播报前若备注尚未命中，会边补抓边等待（每 160ms 一轮，
   最多约 1.2 秒），全部命中立即播；缓存已热时零延迟。

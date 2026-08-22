@@ -662,13 +662,10 @@
     // 备注只存在于页面 DOM（内联橙色），WS 帧里拿不到，需从卡片头部抓取缓存。
     remarkMap: new Map(),
     REMARK_STORAGE_KEY: 'dsmTwitterRemarksV1',
-    REMARK_MAX: 500,
+    REMARK_ITEM_PREFIX: 'dsmTwitterRemarkV2:',
     // 小写昵称 → 小写 handle：WS 帧里的 id/tw 都对不上时的第三路反查。
     nickToHandleMap: new Map(),
     NICK_MAP_MAX: 500,
-    // 两击删除投票：handle → { text, firstAt }，防 React 过渡态误删备注。
-    pendingForgetVotes: new Map(),
-    remarkPersistTimer: null,
     remarksLoaded: false,
     lastRemarkSignature: '',
     REMARK_WAIT_MS: 1200,
@@ -778,52 +775,21 @@
     }
   }
 
-  function schedulePersistRemarks() {
-    if (social.remarkPersistTimer !== null) clearTimeout(social.remarkPersistTimer);
-    social.remarkPersistTimer = setTimeout(() => {
-      social.remarkPersistTimer = null;
-      if (social.remarkMap.size > social.REMARK_MAX) {
-        const drop = social.remarkMap.size - Math.floor(social.REMARK_MAX * 0.75);
-        let removed = 0;
-        for (const key of social.remarkMap.keys()) {
-          social.remarkMap.delete(key);
-          removed += 1;
-          if (removed >= drop) break;
-        }
-      }
-      try {
-        chrome.storage.local.set({ [social.REMARK_STORAGE_KEY]: Object.fromEntries(social.remarkMap) }).catch(() => {});
-      } catch (error) {}
-    }, 500);
+  function remarkItemStorageKey(handleLower) {
+    return `${social.REMARK_ITEM_PREFIX}${handleLower}`;
   }
 
   function rememberRemark(handleLower, remark) {
     const text = cleanText(remark).slice(0, 80);
     if (!handleLower || !text) return;
     if (social.remarkMap.get(handleLower) === text) return;
-    // 先 delete 再 set 刷新 Map 插入顺序，超限裁剪时保留最近使用的备注。
+    // 先 delete 再 set，让最近捕获的备注保持在 Map 尾部，便于诊断时查看。
     social.remarkMap.delete(handleLower);
     social.remarkMap.set(handleLower, text);
-    schedulePersistRemarks();
-  }
-
-  function forgetRemarkOnce(handleLower, observedText) {
-    // 两击确认：连续两次扫描（间隔 ≥3s）看到同一非橙色名字且与缓存不同才删。
-    // React 过渡态短暂显示原昵称、或备注晚一帧刷入时都不会误删有效备注。
-    if (!handleLower || !social.remarkMap.has(handleLower)) return;
-    if (observedText === social.remarkMap.get(handleLower)) return;
-    const now = Date.now();
-    const prev = social.pendingForgetVotes.get(handleLower);
-    if (prev && prev.text === observedText) {
-      if (now - prev.firstAt >= 3000) {
-        social.remarkMap.delete(handleLower);
-        social.pendingForgetVotes.delete(handleLower);
-        schedulePersistRemarks();
-        console.debug('[DSM remark] 已删除缓存备注:', handleLower);
-      }
-      return;
-    }
-    social.pendingForgetVotes.set(handleLower, { text: observedText, firstAt: now });
+    // 每个 handle 独立存储，多个 GMGN 标签页更新不同备注时不会整表互相覆盖。
+    try {
+      chrome.storage.local.set({ [remarkItemStorageKey(handleLower)]: text }).catch(() => {});
+    } catch (error) {}
   }
 
   function rememberNickPair(nickText, handleLower) {
@@ -875,17 +841,16 @@
       // 命中橙色即写入缓存；从最内层向外找，优先取离 handle 最近的那个。
       const orange = findOrangeRemarkSpan(node);
       if (orange) {
-        social.pendingForgetVotes.delete(handleLower);
         rememberRemark(handleLower, orange.textContent);
         return;
       }
 
-      // 未命中橙色：仅在带编辑图标的“已渲染完”头部里做昵称配对与删除投票。
+      // 未命中橙色只能说明当前卡片显示了昵称，不能证明用户删除了备注。
+      // GMGN 的不同卡片布局和 React 过渡帧经常不渲染橙色备注，因此绝不据此删缓存。
       if (!node.querySelector?.('svg[data-icon="IconEdit16pxRegular"]')) continue;
       const candidates = authorCandidates(node);
       if (candidates.length !== 1 || handles.length !== 1 || handles[0] !== handleAnchor) continue;
       rememberNickPair(candidates[0].textContent, handleLower);
-      forgetRemarkOnce(handleLower, cleanText(candidates[0].textContent));
       return;
     }
   }
@@ -894,13 +859,21 @@
     if (social.remarksLoaded) return;
     social.remarksLoaded = true;
     try {
-      chrome.storage.local.get([social.REMARK_STORAGE_KEY]).then((data) => {
+      chrome.storage.local.get(null).then((data) => {
         const stored = data?.[social.REMARK_STORAGE_KEY];
-        if (!stored || typeof stored !== 'object') return;
-        for (const [handle, remark] of Object.entries(stored)) {
-          if (typeof remark === 'string' && cleanText(remark)) {
-            social.remarkMap.set(String(handle).toLowerCase(), cleanText(remark));
+        if (stored && typeof stored === 'object') {
+          for (const [handle, remark] of Object.entries(stored)) {
+            if (typeof remark === 'string' && cleanText(remark)) {
+              social.remarkMap.set(String(handle).toLowerCase(), cleanText(remark));
+            }
           }
+        }
+        // V2 单条记录优先于旧版整表，读取时顺便兼容已有用户数据。
+        for (const [key, remark] of Object.entries(data || {})) {
+          if (!key.startsWith(social.REMARK_ITEM_PREFIX) || typeof remark !== 'string') continue;
+          const handle = key.slice(social.REMARK_ITEM_PREFIX.length).toLowerCase();
+          const text = cleanText(remark);
+          if (handle && text) social.remarkMap.set(handle, text);
         }
       }).catch(() => {});
     } catch (error) {}
@@ -927,16 +900,24 @@
   } catch (error) {}
 
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== 'local' || !changes[social.REMARK_STORAGE_KEY]) return;
-    // 其他标签页的写入整体采纳；本页若更新，靠后续卡片渲染重新捕获自愈。
-    const next = changes[social.REMARK_STORAGE_KEY].newValue;
-    social.remarkMap.clear();
-    social.pendingForgetVotes.clear();
-    if (next && typeof next === 'object') {
-      for (const [handle, remark] of Object.entries(next)) {
-        if (typeof remark === 'string' && cleanText(remark)) {
-          social.remarkMap.set(String(handle).toLowerCase(), cleanText(remark));
-        }
+    if (area !== 'local') return;
+    // 兼容旧版整表写入，但只合并，绝不让其他标签页的不完整快照清空本页缓存。
+    const legacy = changes[social.REMARK_STORAGE_KEY]?.newValue;
+    if (legacy && typeof legacy === 'object') {
+      for (const [handle, remark] of Object.entries(legacy)) {
+        const text = typeof remark === 'string' ? cleanText(remark) : '';
+        if (text) social.remarkMap.set(String(handle).toLowerCase(), text);
+      }
+    }
+    for (const [key, change] of Object.entries(changes)) {
+      if (!key.startsWith(social.REMARK_ITEM_PREFIX)) continue;
+      const handle = key.slice(social.REMARK_ITEM_PREFIX.length).toLowerCase();
+      const text = typeof change.newValue === 'string' ? cleanText(change.newValue) : '';
+      if (handle && text) {
+        social.remarkMap.set(handle, text);
+      } else if (handle && change.newValue === undefined) {
+        // 只有明确删除对应 V2 存储项时才删除，普通昵称渲染不再触发删除。
+        social.remarkMap.delete(handle);
       }
     }
   });
