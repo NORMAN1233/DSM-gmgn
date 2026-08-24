@@ -1,6 +1,6 @@
 'use strict';
 
-// DSM-gmgn v2.8.2 — GMGN/Axiom trading helpers + GMGN Edge-TTS playback.
+// DSM-gmgn v2.9.0 — GMGN/Axiom trading helpers + GMGN Edge-TTS playback.
 const recentSpeech = new Map();
 const DEDUPE_MS = 60 * 1000;
 let lastSearchTargetTabId = null;
@@ -530,13 +530,13 @@ async function executeRealGmgnSearch(tabId, query) {
   }
 }
 
-async function executeRealAxiomSearch(tabId, query) {
+async function executeRealAxiomSearch(tabId, query, openFirstResult = false) {
   try {
     const results = await chrome.scripting.executeScript({
       target: { tabId },
       world: 'MAIN',
-      args: [query],
-      func: async (rawQuery) => {
+      args: [query, openFirstResult],
+      func: async (rawQuery, shouldOpenFirstResult) => {
         const q = String(rawQuery || '').trim().slice(0, 80);
         if (!q) return { ok: false, reason: 'empty' };
 
@@ -616,6 +616,25 @@ async function executeRealAxiomSearch(tabId, query) {
         }
         if (!input) return { ok: false, reason: 'axiom-search-input-not-found' };
 
+        // Axiom 会记住 Wallets 搜索筛选；C 打开 CA 时必须切回代币搜索，
+        // 否则有效 CA 也会显示 No results found。普通跨屏搜索不改用户筛选。
+        if (shouldOpenFirstResult) {
+          const walletFilter = Array.from(document.querySelectorAll('button,[role="button"]')).find((button) =>
+            visible(button) && button.getAttribute('aria-pressed') === 'true'
+              && /^Wallets$/i.test(String(button.textContent || '').trim()));
+          if (walletFilter) {
+            activate(walletFilter);
+            for (let i = 0; i < 24; i += 1) {
+              const candidate = findInput();
+              if (candidate && /Search by name, ticker, or CA/i.test(candidate.getAttribute('placeholder') || '')) {
+                input = candidate;
+                break;
+              }
+              await wait(i < 8 ? 25 : 50);
+            }
+          }
+        }
+
         activate(input);
         try { input.select(); } catch (error) {}
         try { input.setSelectionRange(0, input.value.length); } catch (error) {}
@@ -633,12 +652,100 @@ async function executeRealAxiomSearch(tabId, query) {
         await wait(260);
 
         const accepted = input.isConnected && input.value === q;
+        if (accepted && shouldOpenFirstResult) {
+          for (let i = 0; i < 80; i += 1) {
+            const currentInput = findInput();
+            const panel = currentInput?.parentElement?.parentElement;
+            const resultList = panel?.lastElementChild;
+            const firstResult = Array.from(resultList?.children || []).find((row) =>
+              visible(row) && !row.querySelector('.animate-pulse') && String(row.textContent || '').trim());
+            if (firstResult) {
+              activate(firstResult);
+              return { ok: true, value: q, browserEdited, opened: true };
+            }
+            await wait(i < 24 ? 50 : 100);
+          }
+          return { ok: false, value: input.value || '', browserEdited, reason: 'axiom-token-result-not-found' };
+        }
         return {
           ok: accepted,
           value: input.value || '',
           browserEdited,
           reason: accepted ? '' : 'axiom-controlled-input-reset'
         };
+      }
+    });
+    return results?.[0]?.result || { ok: false, reason: 'no-result' };
+  } catch (error) {
+    return { ok: false, reason: String(error?.message || error || 'execute-failed') };
+  }
+}
+
+async function executeAxiomXPreview(tabId, action) {
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: 'MAIN',
+      args: [action],
+      func: (requestedAction) => {
+        const stateKey = '__DSM_AXIOM_X_PREVIEW_LINK__';
+        const dispatchEscape = () => {
+          document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, composed: true }));
+          document.dispatchEvent(new KeyboardEvent('keyup', { key: 'Escape', code: 'Escape', bubbles: true, composed: true }));
+        };
+        const close = () => {
+          const link = window[stateKey];
+          window[stateKey] = null;
+          if (link?.isConnected) {
+            const rect = link.getBoundingClientRect();
+            const base = {
+              bubbles: true, cancelable: true, composed: true,
+              clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2,
+              relatedTarget: document.body, view: window
+            };
+            try { link.dispatchEvent(new PointerEvent('pointerout', { ...base, pointerType: 'mouse' })); } catch (error) {}
+            try { link.dispatchEvent(new PointerEvent('pointerleave', { ...base, bubbles: false, pointerType: 'mouse' })); } catch (error) {}
+            try { link.dispatchEvent(new MouseEvent('mouseout', base)); } catch (error) {}
+            try { link.dispatchEvent(new MouseEvent('mouseleave', { ...base, bubbles: false })); } catch (error) {}
+            try { link.dispatchEvent(new FocusEvent('focusout', { bubbles: true, composed: true, relatedTarget: document.body })); } catch (error) {}
+            try { link.blur(); } catch (error) {}
+          }
+          dispatchEscape();
+        };
+
+        close();
+        if (requestedAction !== 'open') return { ok: true, closed: true };
+        const links = Array.from(document.querySelectorAll('a[href]')).filter((link) => {
+          try {
+            const url = new URL(link.href);
+            const rect = link.getBoundingClientRect();
+            return /(^|\.)(x|twitter)\.com$/i.test(url.hostname)
+              && !/^\/(?:search|home|explore|notifications|messages)(?:\/|$)/i.test(url.pathname)
+              && rect.width > 0 && rect.height > 0;
+          } catch (error) { return false; }
+        });
+        const link = links.find((candidate) => /\/status\/\d+/i.test(candidate.href))
+          || links.find((candidate) => {
+            try { return !/^\/axiomexchange\/?$/i.test(new URL(candidate.href).pathname); }
+            catch (error) { return false; }
+          });
+        if (!link) return { ok: false, reason: 'axiom-x-link-not-found' };
+
+        const rect = link.getBoundingClientRect();
+        const base = {
+          bubbles: true, cancelable: true, composed: true,
+          clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2,
+          view: window
+        };
+        try { link.dispatchEvent(new PointerEvent('pointerover', { ...base, pointerType: 'mouse' })); } catch (error) {}
+        try { link.dispatchEvent(new PointerEvent('pointerenter', { ...base, bubbles: false, pointerType: 'mouse' })); } catch (error) {}
+        try { link.dispatchEvent(new MouseEvent('mouseover', base)); } catch (error) {}
+        try { link.dispatchEvent(new MouseEvent('mouseenter', { ...base, bubbles: false })); } catch (error) {}
+        try { link.dispatchEvent(new MouseEvent('mousemove', base)); } catch (error) {}
+        try { link.focus({ preventScroll: true }); } catch (error) { try { link.focus(); } catch (e) {} }
+        try { link.dispatchEvent(new FocusEvent('focusin', { bubbles: true, composed: true })); } catch (error) {}
+        window[stateKey] = link;
+        return { ok: true, opened: true };
       }
     });
     return results?.[0]?.result || { ok: false, reason: 'no-result' };
@@ -710,6 +817,35 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const reason = String(error?.message || error || 'route-failed');
       appendRuntimeLog({ level: 'error', category: '跨屏搜索', title: '关键词发送异常', detail: reason });
       sendResponse({ ok: false, reason });
+    });
+    return true;
+  }
+
+  if (message.type === 'DSM_AXIOM_OPEN_CA') {
+    const ca = String(message.ca || '').trim();
+    const host = (() => { try { return new URL(sender?.url || '').hostname; } catch (error) { return ''; } })();
+    if (!Number.isInteger(sender?.tab?.id) || (host !== 'axiom.trade' && !host.endsWith('.axiom.trade'))) {
+      sendResponse({ ok: false, reason: 'axiom-page-required' });
+      return;
+    }
+    if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(ca)) {
+      sendResponse({ ok: false, reason: 'invalid-solana-ca' });
+      return;
+    }
+    executeRealAxiomSearch(sender.tab.id, ca, true).then(sendResponse).catch((error) => {
+      sendResponse({ ok: false, reason: String(error?.message || error || 'axiom-open-failed') });
+    });
+    return true;
+  }
+
+  if (message.type === 'DSM_AXIOM_X_PREVIEW') {
+    const host = (() => { try { return new URL(sender?.url || '').hostname; } catch (error) { return ''; } })();
+    if (!Number.isInteger(sender?.tab?.id) || (host !== 'axiom.trade' && !host.endsWith('.axiom.trade'))) {
+      sendResponse({ ok: false, reason: 'axiom-page-required' });
+      return;
+    }
+    executeAxiomXPreview(sender.tab.id, message.action === 'open' ? 'open' : 'close').then(sendResponse).catch((error) => {
+      sendResponse({ ok: false, reason: String(error?.message || error || 'axiom-x-preview-failed') });
     });
     return true;
   }

@@ -1,4 +1,4 @@
-# DSM-gmgn v2.8.2 — GMGN + Axiom 版
+# DSM-gmgn v2.9.0 — GMGN + Axiom 版
 
 Chrome 扩展，提供 GMGN 推特监控播报，以及同时覆盖 GMGN / Axiom 的跨屏搜索、已看 CA 标记和 5 秒决策辅助。
 
@@ -63,6 +63,7 @@ Edge-TTS 需要联网。当前使用参考插件的公共 Worker：
 - 跨屏搜索：从 GMGN 正文划词或绿色高亮词发起，可投送到另一屏 GMGN 或 Axiom 全局搜索。
 - “Axiom 作为主搜索页”默认关闭；开启后划词/高亮词只投送到已打开的 Axiom 页面，自动打开全局搜索并填入关键词。未打开 Axiom 时会直接提示，不会回退到 GMGN。
 - 5 秒决策：GMGN `/token/`、`/pump/` 与 Axiom `/meme/{CA}` 详情页均自动启动倒计时。
+- Axiom 快捷键：`C` 通过 Axiom 原生搜索打开剪贴板 Solana CA；按住 `X` 打开 Axiom 原生 X 预览，松开立即关闭。
 - 圆形尺寸/位置和非阻塞休息提醒同样支持两平台。
 - 推特 WebSocket 监听、备注提取和 Edge-TTS 播报仍只在 GMGN 页面运行。
 

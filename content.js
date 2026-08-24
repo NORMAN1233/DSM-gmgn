@@ -2,7 +2,7 @@
   'use strict';
 
   // ============================================================
-  // DSM-gmgn v2.8.2 Content Script
+  // DSM-gmgn v2.9.0 Content Script
   // 原插件 1：GMGN 已看 CA 标记（jiankongtiao）
   // 原插件 2：GMGN 5秒极速辅助决策（GMGN-5s-Decision / C:\repo 圆形倒计时版）
   // 设计目标：功能可开关、设置持久化、UI 对齐 DataStorm、尽量不拖慢 GMGN 页面。
@@ -1892,6 +1892,68 @@
       sendResponse({ ok: true, accepted: true, hadInput });
     }
   });
+
+  // ============================================================
+  // Axiom 快捷键：C 打开剪贴板 CA，X 按住预览原生 X 信息
+  // ============================================================
+  const axiomHotkeys = { xPressed: false };
+
+  function isTypingTarget(target) {
+    return target instanceof Element
+      && !!target.closest('input,textarea,select,[contenteditable="true"],[role="textbox"]');
+  }
+
+  function extractClipboardSolanaCA(value) {
+    return String(value || '').match(/\b[1-9A-HJ-NP-Za-km-z]{32,44}\b/)?.[0] || '';
+  }
+
+  function sendAxiomHotkeyMessage(message) {
+    try {
+      const result = chrome.runtime.sendMessage(message);
+      return result && typeof result.then === 'function' ? result : Promise.resolve(null);
+    } catch (error) {
+      return Promise.resolve(null);
+    }
+  }
+
+  async function handleAxiomHotkeyDown(event) {
+    if (PAGE_PLATFORM !== 'axiom' || !isMasterOn() || event.repeat || event.metaKey || event.ctrlKey || event.altKey
+        || isTypingTarget(event.target) || isTypingTarget(document.activeElement)) return;
+    if (event.code === 'KeyC') {
+      event.preventDefault();
+      try {
+        const ca = extractClipboardSolanaCA(await navigator.clipboard.readText());
+        if (!ca) return showSelectionRouteToast('剪贴板中没有有效 Solana CA', false);
+        const result = await sendAxiomHotkeyMessage({ type: 'DSM_AXIOM_OPEN_CA', ca });
+        if (!result?.ok) showSelectionRouteToast('Axiom 未找到该 CA', false);
+      } catch (error) {
+        showSelectionRouteToast('无法读取剪贴板，请检查扩展权限', false);
+      }
+      return;
+    }
+    if (event.code === 'KeyX') {
+      event.preventDefault();
+      axiomHotkeys.xPressed = true;
+      const result = await sendAxiomHotkeyMessage({ type: 'DSM_AXIOM_X_PREVIEW', action: 'open' });
+      if (!axiomHotkeys.xPressed) {
+        sendAxiomHotkeyMessage({ type: 'DSM_AXIOM_X_PREVIEW', action: 'close' });
+      } else if (!result?.ok) {
+        showSelectionRouteToast('当前页面未找到项目 X 链接', false);
+      }
+    }
+  }
+
+  function closeAxiomXPreview() {
+    if (PAGE_PLATFORM !== 'axiom') return;
+    axiomHotkeys.xPressed = false;
+    sendAxiomHotkeyMessage({ type: 'DSM_AXIOM_X_PREVIEW', action: 'close' });
+  }
+
+  if (PAGE_PLATFORM === 'axiom') {
+    addEventListener('keydown', (event) => { handleAxiomHotkeyDown(event).catch(() => {}); }, true);
+    addEventListener('keyup', (event) => { if (event.code === 'KeyX') closeAxiomXPreview(); }, true);
+    addEventListener('blur', closeAxiomXPreview);
+  }
 
   // ============================================================
   // 模块三：圆形 5 秒决策 + 非阻塞休息提醒

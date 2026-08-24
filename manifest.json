@@ -1,12 +1,13 @@
 {
   "manifest_version": 3,
   "name": "DSM-gmgn",
-  "version": "2.8.2",
+  "version": "2.9.0",
   "description": "GMGN + Axiom 交易辅助：已看 CA、跨屏搜索、5 秒决策，以及 GMGN 推特监控播报。",
   "permissions": [
     "storage",
     "scripting",
-    "offscreen"
+    "offscreen",
+    "clipboardRead"
   ],
   "host_permissions": [
     "https://gmgn.ai/*",
