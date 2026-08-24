@@ -1000,36 +1000,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  if (message.type === 'DSM_AXIOM_OPEN_CA') {
-    const ca = normalizeTokenCA(message.ca);
-    const host = (() => { try { return new URL(sender?.url || '').hostname; } catch (error) { return ''; } })();
-    if (!Number.isInteger(sender?.tab?.id) || (host !== 'axiom.trade' && !host.endsWith('.axiom.trade'))) {
-      sendResponse({ ok: false, reason: 'axiom-page-required' });
-      return;
-    }
-    if (!ca || /^0x/i.test(ca)) {
-      sendResponse({ ok: false, reason: 'invalid-solana-ca' });
-      return;
-    }
-    // C is a navigation shortcut, not a search shortcut. A CA is already an
-    // exact identity, so route the current Axiom tab straight to the K-line page
-    // and completely bypass the search modal/result-click chain.
-    navigateAxiomTokenDetails({ tab: sender.tab }, ca).then((result) => {
-      appendRuntimeLog({
-        level: result?.ok ? 'success' : 'error',
-        category: 'C键跳转',
-        title: result?.ok ? 'Axiom K线已打开' : 'Axiom K线跳转失败',
-        detail: result?.ok ? `${ca} · ${result.targetUrl || result.resolvedHref || ''}` : `${ca} · ${result?.reason || '未知原因'}`
-      });
-      sendResponse(result);
-    }).catch((error) => {
-      const reason = String(error?.message || error || 'axiom-open-failed');
-      appendRuntimeLog({ level: 'error', category: 'C键跳转', title: 'Axiom K线跳转异常', detail: `${ca} · ${reason}` });
-      sendResponse({ ok: false, reason });
-    });
-    return true;
-  }
-
   if (message.type === 'DSM_AXIOM_X_PREVIEW') {
     const host = (() => { try { return new URL(sender?.url || '').hostname; } catch (error) { return ''; } })();
     if (!Number.isInteger(sender?.tab?.id) || (host !== 'axiom.trade' && !host.endsWith('.axiom.trade'))) {

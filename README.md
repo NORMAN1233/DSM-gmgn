@@ -68,8 +68,8 @@ Edge-TTS 需要联网。当前使用参考插件的公共 Worker：
 - “Axiom 作为主搜索页”默认关闭；开启后划词/高亮词只投送到已打开的 Axiom 页面：CA 直达 K 线，
   其他关键词自动打开全局搜索并填入。未打开 Axiom 时会直接提示，不会回退到 GMGN。
 - 5 秒决策：GMGN `/token/`、`/pump/` 与 Axiom `/meme/{CA}` 详情页均自动启动倒计时。
-- Axiom 快捷键：`C` 使用当前已登录页面的原生结果链接进入剪贴板 Solana CA 的 K 线详情，
-  避免整页加载触发 Cloudflare 空白页；按住 `X` 打开 Axiom 原生 X 预览，松开立即关闭。
+- Axiom 快捷键：`C` 同步触发顶部原生“Paste CA”按钮，由 Axiom 读取剪贴板并进入 K 线详情；
+  按住 `X` 打开 Axiom 原生 X 预览，松开立即关闭。
 - 圆形尺寸/位置和非阻塞休息提醒同样支持两平台。
 - 推特 WebSocket 监听、备注提取和 Edge-TTS 播报仍只在 GMGN 页面运行。
 

@@ -6,8 +6,7 @@
   "permissions": [
     "storage",
     "scripting",
-    "offscreen",
-    "clipboardRead"
+    "offscreen"
   ],
   "host_permissions": [
     "https://gmgn.ai/*",
@@ -27,6 +26,18 @@
       ],
       "js": [
         "twitter-inject.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "https://axiom.trade/*",
+        "https://*.axiom.trade/*"
+      ],
+      "js": [
+        "axiom-native-paste.js"
       ],
       "run_at": "document_start",
       "world": "MAIN",

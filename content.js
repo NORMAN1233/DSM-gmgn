@@ -1954,17 +1954,46 @@
   });
 
   // ============================================================
-  // Axiom 快捷键：C 打开剪贴板 CA，X 按住预览原生 X 信息
+  // Axiom 快捷键：C 触发原生 Paste CA，X 按住预览原生 X 信息
   // ============================================================
-  const axiomHotkeys = { xPressed: false };
+  const axiomHotkeys = { xPressed: false, cSeq: 0 };
+  const AXIOM_PASTE_REQUEST_EVENT = 'dsm-axiom-native-paste-ca';
+  const AXIOM_PASTE_RESULT_ATTR = 'data-dsm-axiom-native-paste-result';
 
   function isTypingTarget(target) {
     return target instanceof Element
       && !!target.closest('input,textarea,select,[contenteditable="true"],[role="textbox"]');
   }
 
-  function extractClipboardSolanaCA(value) {
-    return String(value || '').match(/\b[1-9A-HJ-NP-Za-km-z]{32,44}\b/)?.[0] || '';
+  function triggerAxiomNativePasteCa() {
+    const root = document.documentElement;
+    if (!root) return 'bridge-unavailable';
+    root.removeAttribute(AXIOM_PASTE_RESULT_ATTR);
+    document.dispatchEvent(new CustomEvent(AXIOM_PASTE_REQUEST_EVENT));
+    const result = root.getAttribute(AXIOM_PASTE_RESULT_ATTR) || 'bridge-unavailable';
+    root.removeAttribute(AXIOM_PASTE_RESULT_ATTR);
+    return result;
+  }
+
+  function isAxiomKlineLocation(href = location.href) {
+    try {
+      return /\/(?:meme|token|trade)\//i.test(new URL(href).pathname);
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function verifyAxiomPasteNavigation(initialHref, seq, attempt = 0) {
+    if (seq !== axiomHotkeys.cSeq) return;
+    if (location.href !== initialHref && isAxiomKlineLocation()) {
+      showSelectionRouteToast('Axiom K 线已打开', true);
+      return;
+    }
+    if (attempt < 23) {
+      setTimeout(() => verifyAxiomPasteNavigation(initialHref, seq, attempt + 1), 250);
+      return;
+    }
+    showSelectionRouteToast('Axiom 已点击但未跳转，请确认剪贴板里是有效 CA', false);
   }
 
   function sendAxiomHotkeyMessage(message) {
@@ -1981,17 +2010,26 @@
         || isTypingTarget(event.target) || isTypingTarget(document.activeElement)) return;
     if (event.code === 'KeyC') {
       event.preventDefault();
-      try {
-        const ca = extractClipboardSolanaCA(await navigator.clipboard.readText());
-        if (!ca) return showSelectionRouteToast('剪贴板中没有有效 Solana CA', false);
-        const result = await sendAxiomHotkeyMessage({ type: 'DSM_AXIOM_OPEN_CA', ca });
-        if (!result?.ok) {
-          const notFound = result?.reason === 'axiom-token-result-not-found';
-          showSelectionRouteToast(notFound ? 'Axiom 未找到该 CA' : 'Axiom K 线跳转失败，请重试', false);
-        }
-      } catch (error) {
-        showSelectionRouteToast('无法读取剪贴板，请检查扩展权限', false);
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      const initialHref = location.href;
+      const result = triggerAxiomNativePasteCa();
+      if (result === 'busy') {
+        showSelectionRouteToast('Axiom 正在读取 CA…', true);
+        return;
       }
+      if (!result.startsWith('clicked:')) {
+        const message = result === 'bridge-unavailable'
+          ? 'Axiom 原生桥接未加载，请重新加载扩展并刷新页面'
+          : result === 'click-error'
+            ? 'Axiom Paste CA 点击失败，请重试'
+            : '未找到 Axiom 原生 Paste CA 按钮，请刷新页面';
+        showSelectionRouteToast(message, false);
+        return;
+      }
+      const seq = ++axiomHotkeys.cSeq;
+      showSelectionRouteToast('正在打开 Axiom K 线…', true);
+      setTimeout(() => verifyAxiomPasteNavigation(initialHref, seq), 250);
       return;
     }
     if (event.code === 'KeyX') {
