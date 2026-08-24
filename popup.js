@@ -86,6 +86,7 @@ const els = {
   logCount: $('logCount'),
   logList: $('logList'),
   refreshLogs: $('refreshLogs'),
+  exportLogs: $('exportLogs'),
   clearLogs: $('clearLogs'),
   logsMessage: $('logsMessage')
 };
@@ -196,6 +197,55 @@ async function refreshLogs() {
   } catch (error) {
     renderLogs([]);
     showMessage(els.logsMessage, '日志读取失败');
+  }
+}
+
+// 导出始终写全量日志（忽略当前筛选），排查问题时才不会漏掉被筛掉的记录。
+async function exportLogs() {
+  const button = els.exportLogs;
+  if (button) button.disabled = true;
+  try {
+    const response = await chrome.runtime.sendMessage({ type: 'DSM_GET_LOGS' });
+    const logs = Array.isArray(response?.logs) ? response.logs : [];
+    if (!logs.length) {
+      showMessage(els.logsMessage, '暂无日志可导出');
+      return;
+    }
+    const pad = (value) => String(value).padStart(2, '0');
+    const now = new Date();
+    const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+    const lines = logs.map((item) => {
+      const head = `[${formatLogTime(item.at)}] ${String(item.level || 'info').toUpperCase()} ${item.category || '系统'}`;
+      const title = item.title || '运行事件';
+      return item.detail ? `${head} | ${title} | ${item.detail}` : `${head} | ${title}`;
+    });
+    const header = [
+      `DSM-gmgn v${chrome.runtime.getManifest().version} 运行日志`,
+      `导出时间：${now.toLocaleString('zh-CN', { hour12: false })}`,
+      `共 ${logs.length} 条`,
+      '--------------------------------'
+    ].join('\n');
+    const blob = new Blob([`${header}\n${lines.join('\n')}\n`], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `dsm-gmgn-logs-${stamp}.txt`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    showMessage(els.logsMessage, `已导出 ${logs.length} 条日志`);
+    chrome.runtime.sendMessage({
+      type: 'DSM_ADD_LOG',
+      level: 'info',
+      category: '日志',
+      title: '日志已导出',
+      detail: `${logs.length} 条 → ${anchor.download}`
+    }).catch(() => {});
+  } catch (error) {
+    showMessage(els.logsMessage, `导出失败：${error?.message || error}`);
+  } finally {
+    if (button) button.disabled = false;
   }
 }
 
@@ -343,6 +393,7 @@ async function init() {
     });
   });
   if (els.refreshLogs) els.refreshLogs.addEventListener('click', refreshLogs);
+  if (els.exportLogs) els.exportLogs.addEventListener('click', exportLogs);
   if (els.clearLogs) els.clearLogs.addEventListener('click', async () => {
     await chrome.runtime.sendMessage({ type: 'DSM_CLEAR_LOGS' });
     await refreshLogs();
