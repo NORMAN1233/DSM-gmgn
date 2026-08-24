@@ -1,4 +1,4 @@
-# DSM-gmgn v2.7.1 — Edge-TTS 播报版
+# DSM-gmgn v2.7.3 — Edge-TTS 播报版
 
 Chrome 扩展，提供 GMGN 推特监控播报、跨屏搜索、已看 CA 标记和 5 秒决策辅助。
 
@@ -17,6 +17,11 @@ Chrome 扩展，提供 GMGN 推特监控播报、跨屏搜索、已看 CA 标记
 - 新推文卡片常比 WS 帧晚渲染：播报前若备注尚未命中，会边补抓边等待（每 160ms 一轮，
   最多约 1.2 秒），全部命中立即播；缓存已热时零延迟。
 - 播报格式为“名称 发推啦”；同一推送中的多位博主使用顿号合并。
+- 「回复 @某人」类监控事件不播报：注入层按 `in_reply_to_*` / `reply_*` / `parent_*` 字段、
+  `referenced_tweets` 的 replied_to 及 type 文本识别回复事件并剔除，只对原推说“发推啦”。
+  若仍误播回复或原推漏播，在页面主世界控制台输入 `__dsmLastWsRawSample` 查看最近一帧的
+  完整原始字段（kept / droppedAsReply 计数 + 每条 item），据此增删 `twitter-inject.js`
+  里 `isReplyItem` 的识别清单。
 - 使用参考插件同款 Cloudflare Edge-TTS 接口生成 MP3，不下载本地模型。
 - 音频在扩展 offscreen 页面顺序播放，支持后台标签页和多标签去重。
 - 表情、旗帜及装饰符号会在送入 TTS 前清理；希腊形近字（如 DΞGEN）、被空格/点隔开的

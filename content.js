@@ -779,9 +779,20 @@
     return `${social.REMARK_ITEM_PREFIX}${handleLower}`;
   }
 
+  // 备注候选必须像“人起的名字”：GMGN 现在把 @handle 链接文字和 "$6.9M" 徽标也
+  // 渲染成同款橙色，真机上已被误抓进缓存，导致播报直接念句柄。两道硬校验：
+  // 与锚点句柄相同（忽略 @ 和大小写）的文本、纯金额/数字徽标，一律拒绝。
+  function isValidRemarkText(text, handleLower) {
+    const value = cleanText(text);
+    if (!value) return false;
+    if (value.toLowerCase().replace(/^@+/, '') === handleLower) return false;
+    if (/^[$€£￥]?\d+(?:[.,]\d+)?\s*[kmb]?$/i.test(value)) return false;
+    return true;
+  }
+
   function rememberRemark(handleLower, remark) {
     const text = cleanText(remark).slice(0, 80);
-    if (!handleLower || !text) return;
+    if (!handleLower || !text || !isValidRemarkText(text, handleLower)) return;
     if (social.remarkMap.get(handleLower) === text) return;
     // 先 delete 再 set，让最近捕获的备注保持在 Map 尾部，便于诊断时查看。
     social.remarkMap.delete(handleLower);
@@ -809,13 +820,20 @@
   }
 
   // 备注是 GMGN 的内联橙色样式，颜色本身是唯一可靠信号：不再要求特定类名，
-  // 避免备注 span 与普通昵称类名不一致时永远抓不到。跳过推文正文里的高亮词。
-  function findOrangeRemarkSpan(scope) {
+  // 避免备注 span 与普通昵称类名不一致时永远抓不到。跳过推文正文里的高亮词；
+  // 跳过 x.com 链接内的 span（当前 GMGN 把 @handle 文字染成同款橙色，真机已
+  // 复现误存）和校验不通过的候选（句柄等值文本/金额徽标），继续找下一个，
+  // 这样无效橙色不会挡住后面的昵称反查。
+  function findOrangeRemarkSpan(scope, handleLower) {
     for (const span of scope.querySelectorAll('span')) {
       if (span.closest(social.BODY_SELECTOR)) continue;
+      const anchorOwner = span.closest('a');
+      if (anchorOwner && /^https?:\/\/(x|twitter)\.com\//i.test(String(anchorOwner.getAttribute('href') || ''))) continue;
       const text = cleanText(span.textContent);
       if (!text || text.length > 80) continue;
-      if (isRemarkOrange(span)) return span;
+      if (!isRemarkOrange(span)) continue;
+      if (!isValidRemarkText(text, handleLower)) continue;
+      return span;
     }
     return null;
   }
@@ -838,8 +856,8 @@
       const handles = profileHandleAnchors(node);
       if (handles.length > 1) break; // 越过卡片进入列表容器，避免误配他人
 
-      // 命中橙色即写入缓存；从最内层向外找，优先取离 handle 最近的那个。
-      const orange = findOrangeRemarkSpan(node);
+      // 命中有效橙色即写入缓存；从最内层向外找，优先取离 handle 最近的那个。
+      const orange = findOrangeRemarkSpan(node, handleLower);
       if (orange) {
         rememberRemark(handleLower, orange.textContent);
         return;
@@ -869,11 +887,19 @@
           }
         }
         // V2 单条记录优先于旧版整表，读取时顺便兼容已有用户数据。
+        // 历史版本会把 @handle 本身或金额徽标误存成备注：加载时清掉这些脏项，
+        // 否则播报会一直“命中”句柄文本。
         for (const [key, remark] of Object.entries(data || {})) {
           if (!key.startsWith(social.REMARK_ITEM_PREFIX) || typeof remark !== 'string') continue;
           const handle = key.slice(social.REMARK_ITEM_PREFIX.length).toLowerCase();
           const text = cleanText(remark);
-          if (handle && text) social.remarkMap.set(handle, text);
+          if (!handle) continue;
+          if (!isValidRemarkText(text, handle)) {
+            social.remarkMap.delete(handle);
+            chrome.storage.local.remove(key).catch(() => {});
+            continue;
+          }
+          social.remarkMap.set(handle, text);
         }
       }).catch(() => {});
     } catch (error) {}
