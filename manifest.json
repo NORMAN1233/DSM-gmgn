@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "DSM-gmgn",
-  "version": "2.7.1",
-  "description": "GMGN 小工具合集：WebSocket 推特监控、Cloudflare Edge-TTS 博主播报、跨屏划词/高亮关键词真实搜索。",
+  "version": "2.8.1",
+  "description": "GMGN + Axiom 交易辅助：已看 CA、跨屏搜索、5 秒决策，以及 GMGN 推特监控播报。",
   "permissions": [
     "storage",
     "scripting",
@@ -11,6 +11,8 @@
   "host_permissions": [
     "https://gmgn.ai/*",
     "https://*.gmgn.ai/*",
+    "https://axiom.trade/*",
+    "https://*.axiom.trade/*",
     "https://cloudflare-edge-tts.tech-melon.workers.dev/*"
   ],
   "icons": {
@@ -32,7 +34,9 @@
     {
       "matches": [
         "https://gmgn.ai/*",
-        "https://*.gmgn.ai/*"
+        "https://*.gmgn.ai/*",
+        "https://axiom.trade/*",
+        "https://*.axiom.trade/*"
       ],
       "css": [
         "styles.css"

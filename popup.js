@@ -15,6 +15,7 @@ const DEFAULT_SETTINGS = {
   twitterVoiceRate: 115,
   twitterNaturalPriority: true,
   selectionSearchEnabled: true,
+  axiomPrimaryEnabled: false,
   decisionEnabled: true,
   batteryEnabled: true,
   decisionSeconds: 5,
@@ -65,6 +66,7 @@ const els = {
   twitterVoicePreview: $('twitterVoicePreview'),
   twitterVoiceCount: $('twitterVoiceCount'),
   selectionSearchEnabled: $('selectionSearchEnabled'),
+  axiomPrimaryEnabled: $('axiomPrimaryEnabled'),
   decisionEnabled: $('decisionEnabled'),
   batteryEnabled: $('batteryEnabled'),
   decisionSeconds: $('decisionSeconds'),
@@ -120,6 +122,7 @@ function getSettingsFromControls() {
     twitterVoiceRate: [115, 150, 175].includes(Number(els.twitterVoiceRate?.value))
       ? Number(els.twitterVoiceRate.value) : 115,
     selectionSearchEnabled: els.selectionSearchEnabled.checked,
+    axiomPrimaryEnabled: els.axiomPrimaryEnabled.checked,
     decisionEnabled: els.decisionEnabled.checked,
     batteryEnabled: els.batteryEnabled.checked,
     decisionSeconds: Math.min(60, Math.max(1, Number(els.decisionSeconds.value) || 5)),
@@ -212,6 +215,7 @@ function applySettings(settings) {
   if (els.twitterVoiceRate) els.twitterVoiceRate.value = String(rate);
   if (els.twitterVoiceRateValue) els.twitterVoiceRateValue.textContent = `+${rate - 100}%`;
   els.selectionSearchEnabled.checked = !!s.selectionSearchEnabled;
+  els.axiomPrimaryEnabled.checked = !!s.axiomPrimaryEnabled;
   els.decisionEnabled.checked = !!s.decisionEnabled;
   els.batteryEnabled.checked = !!s.batteryEnabled;
   els.decisionSeconds.value = String(s.decisionSeconds);
@@ -227,6 +231,7 @@ function applySettings(settings) {
   if (els.twitterVoiceRate) els.twitterVoiceRate.disabled = !masterOn || !s.twitterVoiceEnabled;
   if (els.twitterVoicePreview) els.twitterVoicePreview.disabled = !masterOn || !s.twitterVoiceEnabled;
   els.selectionSearchEnabled.disabled = !masterOn;
+  els.axiomPrimaryEnabled.disabled = !masterOn || !s.selectionSearchEnabled;
   els.decisionEnabled.disabled = !masterOn;
   els.batteryEnabled.disabled = !masterOn || !s.decisionEnabled;
 }
@@ -370,6 +375,7 @@ function advancedSaveBindings() {
     [els.twitterVoiceName, 'twitterVoiceName'],
     [els.twitterVoiceRate, 'twitterVoiceRate'],
     [els.selectionSearchEnabled, 'selectionSearchEnabled'],
+    [els.axiomPrimaryEnabled, 'axiomPrimaryEnabled'],
     [els.decisionEnabled, 'decisionEnabled'],
     [els.batteryEnabled, 'batteryEnabled'],
     [els.decisionSeconds, 'decisionSeconds'],
@@ -385,7 +391,7 @@ function advancedSaveBindings() {
       if (els.masterEnabled.checked) {
         const messageEl = control === els.viewedEnabled
           ? els.viewedMessage
-          : (control === els.twitterVoiceEnabled || control === els.twitterVoiceVolume || control === els.twitterVoiceName || control === els.twitterVoiceRate || control === els.selectionSearchEnabled
+          : (control === els.twitterVoiceEnabled || control === els.twitterVoiceVolume || control === els.twitterVoiceName || control === els.twitterVoiceRate || control === els.selectionSearchEnabled || control === els.axiomPrimaryEnabled
             ? els.socialMessage
             : (control === els.decisionEnabled || control === els.batteryEnabled
               ? els.decisionMessage
@@ -408,6 +414,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
     twitterVoiceName: [els.twitterVoiceName],
     twitterVoiceRate: [els.twitterVoiceRate],
     selectionSearchEnabled: [els.selectionSearchEnabled],
+    axiomPrimaryEnabled: [els.axiomPrimaryEnabled],
     decisionEnabled: [els.decisionEnabled],
     batteryEnabled: [els.batteryEnabled],
     decisionSeconds: [els.decisionSeconds],

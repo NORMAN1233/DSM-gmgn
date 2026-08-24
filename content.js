@@ -2,7 +2,7 @@
   'use strict';
 
   // ============================================================
-  // DSM-gmgn v2.6.1 Content Script
+  // DSM-gmgn v2.8.1 Content Script
   // 原插件 1：GMGN 已看 CA 标记（jiankongtiao）
   // 原插件 2：GMGN 5秒极速辅助决策（GMGN-5s-Decision / C:\repo 圆形倒计时版）
   // 设计目标：功能可开关、设置持久化、UI 对齐 DataStorm、尽量不拖慢 GMGN 页面。
@@ -18,6 +18,7 @@
     twitterVoiceName: 'zh-CN-XiaoxiaoNeural',
     twitterVoiceRate: 115,
     selectionSearchEnabled: true,
+    axiomPrimaryEnabled: false,
     decisionEnabled: true,
     batteryEnabled: true,
     decisionSeconds: 5,
@@ -38,6 +39,35 @@
   const SETTING_FIELD_KEYS = SETTING_FIELDS.map(settingFieldKey);
 
   let settings = { ...DEFAULT_SETTINGS };
+
+  const PAGE_HOST = location.hostname.toLowerCase();
+  const PAGE_PLATFORM = PAGE_HOST === 'axiom.trade' || PAGE_HOST.endsWith('.axiom.trade')
+    ? 'axiom'
+    : 'gmgn';
+  const IS_GMGN = PAGE_PLATFORM === 'gmgn';
+  const TOKEN_CA_SOURCE = '(?:0x[a-fA-F0-9]{40}|[1-9A-HJ-NP-Za-km-z]{32,44})';
+  const TOKEN_ROUTE_RE = new RegExp(`/(?:token|pump|t|meme|trade)/(${TOKEN_CA_SOURCE})(?=/|$|[?#])`, 'i');
+  const CHAIN_ADDRESS_RE = new RegExp(`/(?:sol|eth|base|bsc|ton|sui|btc|trx|tron)/(${TOKEN_CA_SOURCE})(?=/|$|[?#])`, 'i');
+
+  if (document.documentElement) document.documentElement.dataset.dsmPlatform = PAGE_PLATFORM;
+
+  function extractTokenCA(value) {
+    const raw = String(value || '');
+    let url = null;
+    try { url = new URL(raw, location.href); } catch (error) { /* use raw fallback */ }
+    const route = url ? `${url.pathname}${url.hash}` : raw;
+    const match = route.match(TOKEN_ROUTE_RE) || route.match(CHAIN_ADDRESS_RE);
+    if (match) return /^0x/i.test(match[1]) ? match[1].toLowerCase() : match[1];
+    if (url) {
+      for (const key of ['address', 'ca', 'mint', 'token']) {
+        const candidate = String(url.searchParams.get(key) || '').trim();
+        if (new RegExp(`^${TOKEN_CA_SOURCE}$`, 'i').test(candidate)) {
+          return /^0x/i.test(candidate) ? candidate.toLowerCase() : candidate;
+        }
+      }
+    }
+    return '';
+  }
 
   function settingsFromStorage(data) {
     const next = { ...DEFAULT_SETTINGS, ...(data[SETTINGS_KEY] || {}) };
@@ -101,12 +131,9 @@
     STORAGE_KEY: 'gmgnViewedCAs',
     CLEAR_KEY: 'gmgnViewedCAsClearedAt',
     LS_KEY: 'gmgn_viewed_cas',
-    // GMGN 2026-08 已移除 TrackerListItem 的 data-sentry-component。
-    // 用稳定的 token 路由识别卡片，避免再绑定到 React/Sentry 内部实现细节。
-    CARD_SELECTOR: 'a[href*="/token/"]',
+    // GMGN 使用 /token/，Axiom 当前使用 /meme/；其余路由保留作兼容兜底。
+    CARD_SELECTOR: 'a[href*="/token/"],a[href*="/pump/"],a[href*="/t/"],a[href*="/meme/"],a[href*="/trade/"]',
     VIEWED_CLASS: 'gmgn-viewed-ca-card-viewed',
-    TOKEN_PATH_RE: /\/(?:sol|eth|base|bsc|ton|sui|btc|trx|tron)\/token\/([^/?#]+)/i,
-    TOKEN_HREF_RE: /\/(?:sol|eth|base|bsc|ton|sui|btc|trx|tron)\/token\/([^/?#]+)/i,
     viewedMap: new Map(),
     lastUrl: location.href,
     scanQueued: false,
@@ -128,13 +155,11 @@
   }
 
   function getCAFromHref(href) {
-    const match = String(href || '').match(viewed.TOKEN_HREF_RE);
-    return match ? normalizeCA(match[1]) : '';
+    return normalizeCA(extractTokenCA(href));
   }
 
   function getCurrentTokenCA() {
-    const match = location.pathname.match(viewed.TOKEN_PATH_RE);
-    return match ? normalizeCA(match[1]) : '';
+    return normalizeCA(extractTokenCA(location.href));
   }
 
 
@@ -224,7 +249,7 @@
     ca = normalizeCA(ca);
     if (!ca) return;
 
-    // localStorage 在同一 gmgn.ai origin 的标签页之间共享。先吸收其他标签页
+    // localStorage 在同一站点的标签页之间共享。先吸收其他标签页
     // 最新数据，再追加当前 CA；立即写本地用于跨标签页快速传播，Chrome storage
     // 仍保持 1 秒节流持久化，兼顾性能与可靠性。
     mergeViewedMap(readLocalViewed());
@@ -261,8 +286,8 @@
       .${viewed.VIEWED_CLASS} {
         border-left-color: transparent !important;
       }
-      .${viewed.VIEWED_CLASS}::before,
-      .${viewed.VIEWED_CLASS}::after {
+      html[data-dsm-platform="gmgn"] .${viewed.VIEWED_CLASS}::before,
+      html[data-dsm-platform="gmgn"] .${viewed.VIEWED_CLASS}::after {
         display: none !important;
       }
       .${viewed.VIEWED_CLASS} [class*="border-l"],
@@ -277,6 +302,25 @@
       .${viewed.VIEWED_CLASS} > [style*="rgb(123,68,242)"],
       .${viewed.VIEWED_CLASS} > [style*="#7b44f2"] {
         display: none !important;
+      }
+      html[data-dsm-platform="axiom"] .${viewed.VIEWED_CLASS} {
+        position: relative !important;
+        opacity: .62 !important;
+        filter: saturate(.55) !important;
+      }
+      html[data-dsm-platform="axiom"] .${viewed.VIEWED_CLASS}::after {
+        content: "已看" !important;
+        display: block !important;
+        position: absolute !important;
+        z-index: 2 !important;
+        top: 5px !important;
+        right: 6px !important;
+        padding: 1px 5px !important;
+        border-radius: 4px !important;
+        background: rgba(91, 98, 111, .88) !important;
+        color: #fff !important;
+        font: 600 10px/16px system-ui, sans-serif !important;
+        pointer-events: none !important;
       }
     `;
     (document.head || document.documentElement).appendChild(style);
@@ -389,7 +433,7 @@
     // monitor list every time the user opens one token.
     const escaped = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(ca) : ca.replace(/[\"\\]/g, '\\$&');
     let cards = [];
-    try { cards = document.querySelectorAll(`a[href*="/token/${escaped}"]`); } catch (error) {}
+    try { cards = document.querySelectorAll(`a[href*="${escaped}"]`); } catch (error) {}
     for (const card of cards) {
       if (getCAFromHref(card.getAttribute('href')) === ca) applyToCard(card);
     }
@@ -665,11 +709,16 @@
     REMARK_ITEM_PREFIX: 'dsmTwitterRemarkV2:',
     // 小写昵称 → 小写 handle：WS 帧里的 id/tw 都对不上时的第三路反查。
     nickToHandleMap: new Map(),
+    persistedNickMap: new Map(),
     NICK_MAP_MAX: 500,
     remarksLoaded: false,
+    remarksLoadPromise: null,
+    REMARK_NICK_PREFIX: 'dsmTwitterNickV2:',
     lastRemarkSignature: '',
-    REMARK_WAIT_MS: 1200,
-    REMARK_POLL_MS: 160
+    REMARK_WAIT_MS: 4800,
+    REMARK_POLL_MS: 160,
+    REMARK_STORAGE_REFRESH_MS: 800,
+    sessionId: 0
   };
 
   function cleanText(value) {
@@ -792,10 +841,20 @@
     } catch (error) {}
   }
 
-  function rememberNickPair(nickText, handleLower) {
-    const nick = cleanText(nickText).toLowerCase();
+  function normalizeNickKey(value) {
+    return cleanText(value).normalize('NFKC').toLowerCase();
+  }
+
+  function remarkNickStorageKey(nickKey) {
+    return `${social.REMARK_NICK_PREFIX}${nickKey}`;
+  }
+
+  function rememberNickPair(nickText, handleLower, persist = false) {
+    const nick = normalizeNickKey(nickText);
     if (!nick || !handleLower || nick.startsWith('@')) return;
-    if (social.nickToHandleMap.get(nick) === handleLower) return;
+    const unchanged = social.nickToHandleMap.get(nick) === handleLower;
+    const alreadyPersisted = social.persistedNickMap.get(nick) === handleLower;
+    if (unchanged && (!persist || alreadyPersisted)) return;
     if (social.nickToHandleMap.size >= social.NICK_MAP_MAX) {
       const drop = social.nickToHandleMap.size - Math.floor(social.NICK_MAP_MAX * 0.75);
       let removed = 0;
@@ -806,6 +865,12 @@
       }
     }
     social.nickToHandleMap.set(nick, handleLower);
+    if (persist) {
+      social.persistedNickMap.set(nick, handleLower);
+      try {
+        chrome.storage.local.set({ [remarkNickStorageKey(nick)]: handleLower }).catch(() => {});
+      } catch (error) {}
+    }
   }
 
   // 备注是 GMGN 的内联橙色样式，颜色本身是唯一可靠信号：不再要求特定类名，
@@ -842,6 +907,16 @@
       const orange = findOrangeRemarkSpan(node);
       if (orange) {
         rememberRemark(handleLower, orange.textContent);
+        // 有些 WS 帧的 id/tw 不是页面 handle；同时保存同卡片昵称别名，后续可由
+        // u.n 反查到 handle，再严格命中备注。排除橙色备注本身，避免自映射。
+        const aliases = new Map();
+        for (const candidate of authorCandidates(node)) {
+          if (candidate === orange || candidate.contains(orange) || orange.contains(candidate)) continue;
+          const alias = cleanText(candidate.textContent);
+          const aliasKey = normalizeNickKey(alias);
+          if (aliasKey) aliases.set(aliasKey, alias);
+        }
+        if (aliases.size === 1) rememberNickPair(Array.from(aliases.values())[0], handleLower, true);
         return;
       }
 
@@ -850,33 +925,53 @@
       if (!node.querySelector?.('svg[data-icon="IconEdit16pxRegular"]')) continue;
       const candidates = authorCandidates(node);
       if (candidates.length !== 1 || handles.length !== 1 || handles[0] !== handleAnchor) continue;
-      rememberNickPair(candidates[0].textContent, handleLower);
+      rememberNickPair(candidates[0].textContent, handleLower, social.remarkMap.has(handleLower));
       return;
     }
   }
 
+  function mergeStoredTwitterMetadata(data) {
+    const stored = data?.[social.REMARK_STORAGE_KEY];
+    if (stored && typeof stored === 'object') {
+      for (const [handle, remark] of Object.entries(stored)) {
+        if (typeof remark === 'string' && cleanText(remark)) {
+          social.remarkMap.set(normalizeHandleKey(handle), cleanText(remark));
+        }
+      }
+    }
+    // V2 单条记录优先于旧版整表，读取时顺便兼容已有用户数据。
+    for (const [key, value] of Object.entries(data || {})) {
+      if (key.startsWith(social.REMARK_ITEM_PREFIX) && typeof value === 'string') {
+        const handle = normalizeHandleKey(key.slice(social.REMARK_ITEM_PREFIX.length));
+        const text = cleanText(value);
+        if (handle && text) social.remarkMap.set(handle, text);
+      } else if (key.startsWith(social.REMARK_NICK_PREFIX) && typeof value === 'string') {
+        const nick = normalizeNickKey(key.slice(social.REMARK_NICK_PREFIX.length));
+        const handle = normalizeHandleKey(value);
+        if (nick && handle) {
+          social.nickToHandleMap.set(nick, handle);
+          social.persistedNickMap.set(nick, handle);
+        }
+      }
+    }
+  }
+
   function loadTwitterRemarks() {
-    if (social.remarksLoaded) return;
-    social.remarksLoaded = true;
+    if (social.remarksLoaded) return Promise.resolve();
+    if (social.remarksLoadPromise) return social.remarksLoadPromise;
     try {
-      chrome.storage.local.get(null).then((data) => {
-        const stored = data?.[social.REMARK_STORAGE_KEY];
-        if (stored && typeof stored === 'object') {
-          for (const [handle, remark] of Object.entries(stored)) {
-            if (typeof remark === 'string' && cleanText(remark)) {
-              social.remarkMap.set(String(handle).toLowerCase(), cleanText(remark));
-            }
-          }
-        }
-        // V2 单条记录优先于旧版整表，读取时顺便兼容已有用户数据。
-        for (const [key, remark] of Object.entries(data || {})) {
-          if (!key.startsWith(social.REMARK_ITEM_PREFIX) || typeof remark !== 'string') continue;
-          const handle = key.slice(social.REMARK_ITEM_PREFIX.length).toLowerCase();
-          const text = cleanText(remark);
-          if (handle && text) social.remarkMap.set(handle, text);
-        }
-      }).catch(() => {});
-    } catch (error) {}
+      social.remarksLoadPromise = chrome.storage.local.get(null)
+        .then((data) => mergeStoredTwitterMetadata(data))
+        .catch(() => {})
+        .finally(() => {
+          social.remarksLoaded = true;
+          social.remarksLoadPromise = null;
+        });
+    } catch (error) {
+      social.remarksLoaded = true;
+      social.remarksLoadPromise = Promise.resolve();
+    }
+    return social.remarksLoadPromise;
   }
 
   // React 卡片晚于 DOMContentLoaded 挂载，且橙色备注常在首帧后才经属性变更刷入
@@ -910,14 +1005,25 @@
       }
     }
     for (const [key, change] of Object.entries(changes)) {
-      if (!key.startsWith(social.REMARK_ITEM_PREFIX)) continue;
-      const handle = key.slice(social.REMARK_ITEM_PREFIX.length).toLowerCase();
-      const text = typeof change.newValue === 'string' ? cleanText(change.newValue) : '';
-      if (handle && text) {
-        social.remarkMap.set(handle, text);
-      } else if (handle && change.newValue === undefined) {
-        // 只有明确删除对应 V2 存储项时才删除，普通昵称渲染不再触发删除。
-        social.remarkMap.delete(handle);
+      if (key.startsWith(social.REMARK_ITEM_PREFIX)) {
+        const handle = normalizeHandleKey(key.slice(social.REMARK_ITEM_PREFIX.length));
+        const text = typeof change.newValue === 'string' ? cleanText(change.newValue) : '';
+        if (handle && text) {
+          social.remarkMap.set(handle, text);
+        } else if (handle && change.newValue === undefined) {
+          // 只有明确删除对应 V2 存储项时才删除，普通昵称渲染不再触发删除。
+          social.remarkMap.delete(handle);
+        }
+      } else if (key.startsWith(social.REMARK_NICK_PREFIX)) {
+        const nick = normalizeNickKey(key.slice(social.REMARK_NICK_PREFIX.length));
+        const handle = normalizeHandleKey(change.newValue);
+        if (nick && handle) {
+          social.nickToHandleMap.set(nick, handle);
+          social.persistedNickMap.set(nick, handle);
+        } else if (nick && change.newValue === undefined) {
+          social.nickToHandleMap.delete(nick);
+          social.persistedNickMap.delete(nick);
+        }
       }
     }
   });
@@ -1022,7 +1128,7 @@
       const key = normalizeHandleKey(raw);
       if (key && !keys.includes(key)) keys.push(key);
     }
-    const nickKey = cleanText(trigger?.name).toLowerCase();
+    const nickKey = normalizeNickKey(trigger?.name);
     const viaNick = nickKey ? social.nickToHandleMap.get(nickKey) : '';
     if (viaNick && !keys.includes(viaNick)) keys.push(viaNick);
     return keys;
@@ -1032,9 +1138,50 @@
   function resolveSpokenName(trigger) {
     for (const key of remarkCandidateKeys(trigger)) {
       const hit = sanitizeSpokenAuthor(social.remarkMap.get(key));
-      if (hit) return hit;
+      if (hit) {
+        // 一旦由任一 WS 字段准确命中备注，就固化昵称别名；下次即使 id/tw
+        // 字段换成数字 ID，也可直接从 u.n 反查到用户备注。
+        rememberNickPair(trigger?.name, key, true);
+        return hit;
+      }
     }
     return '';
+  }
+
+  async function refreshStoredRemarksForTriggers(triggers) {
+    const firstKeys = new Set([social.REMARK_STORAGE_KEY]);
+    for (const trigger of Array.isArray(triggers) ? triggers : []) {
+      for (const raw of [trigger?.id, trigger?.tw]) {
+        const handle = normalizeHandleKey(raw);
+        if (handle) firstKeys.add(remarkItemStorageKey(handle));
+      }
+      const nick = normalizeNickKey(trigger?.name);
+      if (nick) firstKeys.add(remarkNickStorageKey(nick));
+    }
+
+    try {
+      const first = await chrome.storage.local.get(Array.from(firstKeys));
+      mergeStoredTwitterMetadata(first);
+
+      // 第一轮可能刚读到 nickname→handle；再按新得到的 handle 精确取一次备注。
+      const secondKeys = new Set();
+      for (const trigger of Array.isArray(triggers) ? triggers : []) {
+        for (const handle of remarkCandidateKeys(trigger)) {
+          const key = remarkItemStorageKey(handle);
+          if (!firstKeys.has(key)) secondKeys.add(key);
+        }
+      }
+      if (secondKeys.size) {
+        const second = await chrome.storage.local.get(Array.from(secondKeys));
+        mergeStoredTwitterMetadata(second);
+      }
+    } catch (error) {
+      // storage 暂时不可用时继续依赖当前页 DOM；不能阻断推特播报。
+    }
+  }
+
+  function waitForRemarkPoll(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   function buildTwitterAnnouncement(triggers) {
@@ -1073,26 +1220,44 @@
     }
   }
 
-  function speakTwitterAnnouncement(triggers, tweetKey) {
+  async function speakTwitterAnnouncement(triggers, tweetKey) {
     if (!settings.twitterVoiceEnabled) return;
     // 新推文卡片头部常比 WS 帧晚渲染，而备注只存在于页面 DOM：立即播必然
-    // 错过刚发推博主的备注。先短暂轮询补抓，全部命中立刻播，最多等 ~1.2s。
+    // 错过刚发推博主的备注。先等待持久缓存完成加载，再轮询 DOM + 精确复查
+    // storage；全部命中立刻播，只有未命中者最多等待 4.8 秒。
     const list = Array.isArray(triggers) ? triggers : [];
+    const sessionId = social.sessionId;
+    const stillActive = () => social.started
+      && social.sessionId === sessionId
+      && settings.twitterVoiceEnabled
+      && isMasterOn();
+
+    await loadTwitterRemarks();
+    if (!stillActive()) return;
+
     const deadline = Date.now() + social.REMARK_WAIT_MS;
     const unresolved = () => list.some((trigger) => !resolveSpokenName(trigger));
-    const attempt = () => {
-      if (!social.started || !settings.twitterVoiceEnabled || !isMasterOn()) return;
-      if (unresolved() && Date.now() < deadline) {
-        sweepRemarks();
-        if (unresolved()) {
-          setTimeout(attempt, social.REMARK_POLL_MS);
-          return;
-        }
+    let lastStorageRefresh = 0;
+
+    while (stillActive() && unresolved() && Date.now() < deadline) {
+      sweepRemarks();
+      if (unresolved() && Date.now() - lastStorageRefresh >= social.REMARK_STORAGE_REFRESH_MS) {
+        lastStorageRefresh = Date.now();
+        await refreshStoredRemarksForTriggers(list);
       }
-      const text = buildTwitterAnnouncement(list);
-      if (text) sendSpeakMessage(text, tweetKey);
-    };
-    attempt();
+      if (unresolved() && Date.now() < deadline) {
+        await waitForRemarkPoll(Math.min(social.REMARK_POLL_MS, deadline - Date.now()));
+      }
+    }
+
+    if (!stillActive()) return;
+    // 截止前后再各做一次同步来源复查，避免刚好落在轮询间隔边界上。
+    sweepRemarks();
+    if (unresolved()) await refreshStoredRemarksForTriggers(list);
+    if (!stillActive()) return;
+
+    const text = buildTwitterAnnouncement(list);
+    if (text) sendSpeakMessage(text, tweetKey);
   }
 
   function handleTwitterWsMessage(event) {
@@ -1104,7 +1269,7 @@
     if (social.seenTweetKeys.has(key)) return;
     social.seenTweetKeys.set(key, Date.now());
     pruneSeenTweets();
-    speakTwitterAnnouncement(triggers, key);
+    speakTwitterAnnouncement(triggers, key).catch(() => {});
   }
 
   function inspectTweetBody(body, allowSpeech = true) {
@@ -1217,6 +1382,48 @@
       if (input) return input;
     }
     return null;
+  }
+
+  function findVisibleAxiomGlobalSearchLauncher() {
+    const searchText = /search|token|ticker|symbol|contract|address|mint|搜索|合约/i;
+    const inputs = Array.from(document.querySelectorAll('input:not([type="hidden"]),textarea')).filter((candidate) => {
+      if (!isVisibleElement(candidate)) return false;
+      const hint = `${candidate.getAttribute('placeholder') || ''} ${candidate.getAttribute('aria-label') || ''}`;
+      return searchText.test(hint);
+    });
+    if (inputs.length) {
+      return inputs.sort((a, b) => {
+        const aDialog = a.closest('[role="dialog"],[aria-modal="true"]') ? 1 : 0;
+        const bDialog = b.closest('[role="dialog"],[aria-modal="true"]') ? 1 : 0;
+        return bDialog - aDialog || a.getBoundingClientRect().top - b.getBoundingClientRect().top;
+      })[0];
+    }
+
+    const buttons = Array.from(document.querySelectorAll('button,[role="button"]')).filter(isVisibleElement);
+    const labelled = buttons.find((button) => /search|搜索/i.test([
+      button.getAttribute('aria-label'),
+      button.getAttribute('title'),
+      button.dataset?.tooltip,
+      button.textContent
+    ].filter(Boolean).join(' ')));
+    if (labelled) return labelled;
+
+    // Axiom 的全局搜索是顶部导航中的无文字放大镜按钮。它稳定地位于页面
+    // 宽度 55%–70% 区域；严格限制尺寸和纵向位置，避免命中交易面板按钮。
+    return buttons.find((button) => {
+      const rect = button.getBoundingClientRect();
+      const centerX = rect.left + rect.width / 2;
+      return rect.top >= 0 && rect.bottom <= 70
+        && rect.width >= 24 && rect.width <= 56
+        && rect.height >= 24 && rect.height <= 56
+        && centerX >= window.innerWidth * .55 && centerX <= window.innerWidth * .70;
+    }) || null;
+  }
+
+  function findVisiblePlatformSearchLauncher() {
+    return PAGE_PLATFORM === 'axiom'
+      ? findVisibleAxiomGlobalSearchLauncher()
+      : findVisibleGmgnGlobalSearchLauncher();
   }
 
   function dispatchMouseLike(element, type) {
@@ -1344,9 +1551,12 @@
 
   function handleSearchRouteResponse(response, query) {
     if (response && response.ok) {
-      showSelectionRouteToast(`顶部代币搜索：${query}`, true);
+      const targetName = response.platform === 'axiom' ? 'Axiom' : 'GMGN';
+      showSelectionRouteToast(`${targetName} 代币搜索：${query}`, true);
+    } else if (response?.reason === 'no-axiom-search-page' || response?.platform === 'axiom') {
+      showSelectionRouteToast('请先打开 Axiom 页面', false);
     } else {
-      showSelectionRouteToast('未找到 GMGN 顶部代币搜索框', false);
+      showSelectionRouteToast('未找到 GMGN 代币搜索框', false);
     }
   }
 
@@ -1355,7 +1565,8 @@
     try {
       const maybePromise = chrome.runtime.sendMessage({
         type: 'DSM_CROSS_TAB_GMGN_SEARCH',
-        query
+        query,
+        preferAxiom: !!settings.axiomPrimaryEnabled
       });
       if (maybePromise && typeof maybePromise.then === 'function') {
         maybePromise.then((response) => handleSearchRouteResponse(response, query)).catch(() => {
@@ -1366,7 +1577,11 @@
       // Background service worker may be restarting; retry once.
       setTimeout(() => {
         try {
-          const retry = chrome.runtime.sendMessage({ type: 'DSM_CROSS_TAB_GMGN_SEARCH', query });
+          const retry = chrome.runtime.sendMessage({
+            type: 'DSM_CROSS_TAB_GMGN_SEARCH',
+            query,
+            preferAxiom: !!settings.axiomPrimaryEnabled
+          });
           if (retry && typeof retry.then === 'function') {
             retry.then((response) => handleSearchRouteResponse(response, query)).catch(() => {});
           }
@@ -1528,14 +1743,23 @@
   }
 
   function startSocialModule() {
-    if (social.started || (!settings.twitterVoiceEnabled && !settings.selectionSearchEnabled)) return;
+    // 推特 WS 播报和正文取词只存在于 GMGN；Axiom 页面仅作为跨屏搜索目标。
+    const voiceEnabledHere = IS_GMGN && settings.twitterVoiceEnabled;
+    const selectionEnabledHere = IS_GMGN && settings.selectionSearchEnabled;
+    if (social.started || (!voiceEnabledHere && !selectionEnabledHere)) return;
+    social.sessionId += 1;
     social.started = true;
     social.armedAt = Date.now() + 1200;
     social.ac = new AbortController();
 
-    loadTwitterRemarks();
+    if (voiceEnabledHere) {
+      const sessionId = social.sessionId;
+      loadTwitterRemarks().then(() => {
+        if (social.started && social.sessionId === sessionId) sweepRemarks();
+      }).catch(() => {});
+    }
 
-    if (settings.twitterVoiceEnabled) {
+    if (voiceEnabledHere) {
       sweepRemarks();
       if (social.scanTimer === null) {
         social.scanTimer = setInterval(() => {
@@ -1546,7 +1770,7 @@
       window.addEventListener('DSM_TWITTER_WS_MSG_RECEIVED', handleTwitterWsMessage, { signal: social.ac.signal });
     }
 
-    if (settings.selectionSearchEnabled) {
+    if (selectionEnabledHere) {
       // cooking-ai interception is installed once at document_start (see bottom)
       // so it precedes GMGN/React listeners. The social module only owns text
       // selection listeners, which can be cleanly restarted with this AbortSignal.
@@ -1571,6 +1795,7 @@
   function stopSocialModule() {
     if (!social.started) return;
     social.started = false;
+    social.sessionId += 1;
     if (social.ac) {
       social.ac.abort();
       social.ac = null;
@@ -1594,16 +1819,17 @@
     if (isMasterOn() && (settings.twitterVoiceEnabled || settings.selectionSearchEnabled)) startSocialModule();
   }
 
-  // Cross-tab search receiver. The background probes every GMGN tab and sends
-  // the query only to a tab whose real header search input is currently visible.
+  // Cross-tab search receiver. The background probes GMGN + Axiom tabs and sends
+  // the query only to a tab whose real global search launcher is currently visible.
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (!message || !message.type) return;
 
     if (message.type === 'DSM_PROBE_GMGN_SEARCH_TARGET') {
-      const input = findVisibleGmgnGlobalSearchLauncher();
+      const input = findVisiblePlatformSearchLauncher();
       sendResponse({
         ok: true,
         hasGlobalSearch: !!input,
+        platform: PAGE_PLATFORM,
         visible: document.visibilityState === 'visible',
         focused: document.hasFocus(),
         href: location.href
@@ -1666,6 +1892,8 @@
   }
 
   function getTokenKey(href) {
+    const ca = extractTokenCA(href);
+    if (ca) return ca.toLowerCase();
     try {
       const url = new URL(href);
       const route = (url.pathname + url.hash).split('?')[0] || '';
@@ -1677,18 +1905,7 @@
   }
 
   function isKlinePage(href) {
-    try {
-      const url = new URL(href);
-      const route = (url.pathname + url.hash).split('?')[0] || '';
-      if (/\/token\//i.test(route) || /\/pump\//i.test(route)) return true;
-      const segments = route.split('/').filter(Boolean);
-      const last = segments[segments.length - 1] || '';
-      if (/^0x[a-fA-F0-9]{40}$/i.test(last)) return true;
-      if (/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(last)) return true;
-    } catch (error) {
-      // ignore
-    }
-    return false;
+    return !!extractTokenCA(href);
   }
 
   function pad2(value) {
@@ -2331,7 +2548,7 @@
   // ---------- 初始化 ----------
   // 高亮词必须比 GMGN 的 React 委托更早截获，因此不等待 DOMContentLoaded
   // 或 storage 读取；开关状态仍由 handler 内的 settings 实时判断。
-  installEarlyKeywordInterceptors();
+  if (IS_GMGN) installEarlyKeywordInterceptors();
 
   // 尽早安装 history 补丁：content script 在 document_start 注入，
   // 先于页面路由捕获原始 pushState/replaceState，SPA 跳转可被零延迟感知。

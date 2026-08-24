@@ -164,14 +164,35 @@
   border-left-color: transparent !important;
 }
 
-.gmgn-viewed-ca-card-viewed::before,
-.gmgn-viewed-ca-card-viewed::after {
+html[data-dsm-platform="gmgn"] .gmgn-viewed-ca-card-viewed::before,
+html[data-dsm-platform="gmgn"] .gmgn-viewed-ca-card-viewed::after {
   display: none !important;
 }
 
 .gmgn-viewed-ca-card-viewed [class*="border-l"],
 .gmgn-viewed-ca-card-viewed [style*="border-left"] {
   border-left-color: transparent !important;
+}
+
+html[data-dsm-platform="axiom"] .gmgn-viewed-ca-card-viewed {
+  position: relative !important;
+  opacity: .62 !important;
+  filter: saturate(.55) !important;
+}
+
+html[data-dsm-platform="axiom"] .gmgn-viewed-ca-card-viewed::after {
+  content: "已看" !important;
+  display: block !important;
+  position: absolute !important;
+  z-index: 2 !important;
+  top: 5px !important;
+  right: 6px !important;
+  padding: 1px 5px !important;
+  border-radius: 4px !important;
+  background: rgba(91, 98, 111, .88) !important;
+  color: #fff !important;
+  font: 600 10px/16px system-ui, sans-serif !important;
+  pointer-events: none !important;
 }
 
 @media (prefers-reduced-motion: reduce) {
