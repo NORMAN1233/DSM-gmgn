@@ -1,4 +1,4 @@
-# DSM-gmgn v2.9.0 — GMGN + Axiom 版
+# DSM-gmgn v2.9.1 — GMGN + Axiom 版
 
 Chrome 扩展，提供 GMGN 推特监控播报，以及同时覆盖 GMGN / Axiom 的跨屏搜索、已看 CA 标记和 5 秒决策辅助。
 
@@ -11,11 +11,14 @@ Chrome 扩展，提供 GMGN 推特监控播报，以及同时覆盖 GMGN / Axiom
 
 - 与 [Tech-Melon/GmgnTwitterAudioPlayer](https://github.com/Tech-Melon/GmgnTwitterAudioPlayer) 一致，在 MAIN world 监听 GMGN 的 `twitter_user_monitor_basic` WebSocket。
 - 播报名优先级：**GMGN 自定义备注（橙色）→ 服务端昵称 `u.n` → Twitter ID `u.s`**。
+- 播报按 Twitter 账号身份合并：同一账号一旦命中 GMGN 备注，备注会覆盖该账号的昵称/句柄，
+  两者不会再并列播出；旧缓存中的“备注 + @句柄”组合会在读取时自动清洗。
 - 备注从监控卡片 DOM 抓取（内联橙色 `rgb(248,185,81)` 是唯一识别信号），按 handle 独立缓存于
   `chrome.storage.local`（前缀 `dsmTwitterRemarkV2:`），跨会话生效，并兼容读取旧版
   `dsmTwitterRemarksV1`；每 5 秒后台扫描一次保持新鲜。普通昵称出现时不会删除已知备注，
   多个 GMGN 标签页更新不同博主时也不会整表互相覆盖。
-  若 WS 帧里的 id/tw 与页面 handle 对不上，还会用持久化的「昵称 → handle」映射反查。
+  若 WS 帧里的 id/tw 与页面 handle 对不上，还会用持久化的「昵称 → handle」映射反查；发现
+  同名账号时会废弃这条歧义映射，避免把甲账号的备注套到乙账号。
 - 新推文卡片常比 WS 帧晚渲染：播报前若备注尚未命中，会边补抓边等待（每 160ms 一轮，
   同时约每 800ms 精确复查持久缓存，最多约 4.8 秒），全部命中立即播；缓存已热时零延迟。
 - 播报格式为“名称 发推啦”；同一推送中的多位博主使用顿号合并。
@@ -60,10 +63,13 @@ Edge-TTS 需要联网。当前使用参考插件的公共 Worker：
 ## 其他功能
 
 - 已看 CA：GMGN / Axiom 共用一份记录；GMGN 隐藏已查看卡片紫条，Axiom 卡片降低饱和度并显示“已看”。
-- 跨屏搜索：从 GMGN 正文划词或绿色高亮词发起，可投送到另一屏 GMGN 或 Axiom 全局搜索。
-- “Axiom 作为主搜索页”默认关闭；开启后划词/高亮词只投送到已打开的 Axiom 页面，自动打开全局搜索并填入关键词。未打开 Axiom 时会直接提示，不会回退到 GMGN。
+- 跨屏路由：从 GMGN 正文划词或绿色高亮词发起；Axiom 主页面模式下，合法 CA 会通过
+  Axiom 当前搜索结果的真实链接进入 K 线详情，名称/Ticker 等普通关键词只停留在全局搜索。
+- “Axiom 作为主搜索页”默认关闭；开启后划词/高亮词只投送到已打开的 Axiom 页面：CA 直达 K 线，
+  其他关键词自动打开全局搜索并填入。未打开 Axiom 时会直接提示，不会回退到 GMGN。
 - 5 秒决策：GMGN `/token/`、`/pump/` 与 Axiom `/meme/{CA}` 详情页均自动启动倒计时。
-- Axiom 快捷键：`C` 通过 Axiom 原生搜索打开剪贴板 Solana CA；按住 `X` 打开 Axiom 原生 X 预览，松开立即关闭。
+- Axiom 快捷键：`C` 使用当前已登录页面的原生结果链接进入剪贴板 Solana CA 的 K 线详情，
+  避免整页加载触发 Cloudflare 空白页；按住 `X` 打开 Axiom 原生 X 预览，松开立即关闭。
 - 圆形尺寸/位置和非阻塞休息提醒同样支持两平台。
 - 推特 WebSocket 监听、备注提取和 Edge-TTS 播报仍只在 GMGN 页面运行。
 
@@ -80,4 +86,5 @@ Edge-TTS 需要联网。当前使用参考插件的公共 Worker：
 - 新推文到达时应只播一次对应的 GMGN 推送显示名。
 - 多人同批消息应合并为“名称一、名称二 发推啦”。
 - 打开 Axiom `/meme/{CA}` 详情页时应出现 5 秒倒计时，返回 Pulse 后该 CA 卡片应显示“已看”。
-- GMGN 划词或绿色高亮词应能投送到另一屏的 Axiom 全局搜索。
+- GMGN 点击合法 CA 高亮词时，另一屏 Axiom 应直接进入 `/meme/{CA}` K 线详情，不应停留在搜索页；
+  名称/Ticker 等普通词仍应进入 Axiom 全局搜索。

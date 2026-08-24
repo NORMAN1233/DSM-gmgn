@@ -2,7 +2,7 @@
   'use strict';
 
   // ============================================================
-  // DSM-gmgn v2.9.0 Content Script
+  // DSM-gmgn v2.9.1 Content Script
   // 原插件 1：GMGN 已看 CA 标记（jiankongtiao）
   // 原插件 2：GMGN 5秒极速辅助决策（GMGN-5s-Decision / C:\repo 圆形倒计时版）
   // 设计目标：功能可开关、设置持久化、UI 对齐 DataStorm、尽量不拖慢 GMGN 页面。
@@ -710,6 +710,7 @@
     // 小写昵称 → 小写 handle：WS 帧里的 id/tw 都对不上时的第三路反查。
     nickToHandleMap: new Map(),
     persistedNickMap: new Map(),
+    ambiguousNickKeys: new Set(),
     NICK_MAP_MAX: 500,
     remarksLoaded: false,
     remarksLoadPromise: null,
@@ -771,19 +772,23 @@
 
   function profileHandleAnchors(scope) {
     if (!scope?.querySelectorAll) return [];
-    return Array.from(scope.querySelectorAll('a[href^="https://x.com/"], a[href^="http://x.com/"]')).filter((anchor) => {
-      const href = String(anchor.getAttribute('href') || '');
+    return Array.from(scope.querySelectorAll('a[href]')).filter((anchor) => {
       const text = cleanText(anchor.textContent);
       if (!text.startsWith('@')) return false;
-      if (/\/status\//i.test(href)) return false;
-      try {
-        const url = new URL(href, location.href);
-        const parts = url.pathname.split('/').filter(Boolean);
-        return parts.length === 1;
-      } catch (error) {
-        return true;
-      }
+      return !!profileHandleFromHref(anchor.getAttribute('href'));
     });
+  }
+
+  function profileHandleFromHref(href) {
+    try {
+      const url = new URL(String(href || ''), location.href);
+      const host = url.hostname.toLowerCase().replace(/^www\./, '');
+      if (host !== 'x.com' && host !== 'twitter.com') return '';
+      const parts = url.pathname.split('/').filter(Boolean);
+      return parts.length === 1 ? normalizeHandleKey(decodeURIComponent(parts[0])) : '';
+    } catch (error) {
+      return '';
+    }
   }
 
   function authorCandidates(scope) {
@@ -832,18 +837,29 @@
   // 「回复 @某人」标签（text-yellow-100 与备注同款色，真机日志实证被念成
   // “回复 XXX 发推啦”）都渲染成同款橙色。硬校验：与锚点句柄相同（忽略 @ 和
   // 大小写）、纯金额/数字徽标、回复标签形状（回复/Reply 开头）的文本，一律拒绝。
-  function isValidRemarkText(text, handleLower) {
-    const value = cleanText(text);
+  function normalizeRemarkText(text, handleLower) {
+    let value = cleanText(text);
     if (!value) return false;
-    if (value.toLowerCase().replace(/^@+/, '') === handleLower) return false;
-    if (/^[$€£￥]?\d+(?:[.,]\d+)?\s*[kmb]?$/i.test(value)) return false;
-    if (/^回复/.test(value) || /^repl/i.test(value)) return false;
-    return true;
+    const handle = normalizeHandleKey(handleLower);
+    if (handle) {
+      // Older builds could persist an orange wrapper whose text was
+      // "GMGN备注 @twitter_handle". Strip only this account's explicit handle;
+      // never concatenate it into the text sent to TTS.
+      const escaped = handle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      value = cleanText(value.replace(new RegExp(`@${escaped}(?=$|[^a-z0-9_])`, 'ig'), ' '));
+    }
+    if (!value || normalizeHandleKey(value) === handle) return '';
+    // Any remaining @handle means this is still a composite UI wrapper rather
+    // than the user's plain GMGN remark. Reject it instead of caching mixed text.
+    if (/@[a-z0-9_]{1,15}\b/i.test(value)) return '';
+    if (/^[$€£￥]?\d+(?:[.,]\d+)?\s*[kmb]?$/i.test(value)) return '';
+    if (/^回复/.test(value) || /^repl/i.test(value)) return '';
+    return value.slice(0, 80);
   }
 
   function rememberRemark(handleLower, remark) {
-    const text = cleanText(remark).slice(0, 80);
-    if (!handleLower || !text || !isValidRemarkText(text, handleLower)) return;
+    const text = normalizeRemarkText(remark, handleLower);
+    if (!handleLower || !text) return;
     if (social.remarkMap.get(handleLower) === text) return;
     // 先 delete 再 set，让最近捕获的备注保持在 Map 尾部，便于诊断时查看。
     social.remarkMap.delete(handleLower);
@@ -865,6 +881,18 @@
   function rememberNickPair(nickText, handleLower, persist = false) {
     const nick = normalizeNickKey(nickText);
     if (!nick || !handleLower || nick.startsWith('@')) return;
+    const currentHandle = social.nickToHandleMap.get(nick);
+    if (currentHandle && currentHandle !== handleLower) {
+      // Display names are not unique. Once the same nickname is observed for two
+      // handles, it is unsafe as a reverse-lookup key: remove the persisted pair
+      // so it can never make one account speak another account's GMGN remark.
+      social.ambiguousNickKeys.add(nick);
+      social.nickToHandleMap.delete(nick);
+      social.persistedNickMap.delete(nick);
+      try { chrome.storage.local.remove(remarkNickStorageKey(nick)).catch(() => {}); } catch (error) {}
+      return;
+    }
+    if (social.ambiguousNickKeys.has(nick)) return;
     const unchanged = social.nickToHandleMap.get(nick) === handleLower;
     const alreadyPersisted = social.persistedNickMap.get(nick) === handleLower;
     if (unchanged && (!persist || alreadyPersisted)) return;
@@ -888,44 +916,40 @@
 
   // 备注是 GMGN 的内联橙色样式，颜色本身是唯一可靠信号：不再要求特定类名，
   // 避免备注 span 与普通昵称类名不一致时永远抓不到。跳过推文正文里的高亮词；
-  // 跳过 x.com 链接内（v2.7.2：@handle 文字被染成同款橙色）和内含 x.com 链接的
+  // 跳过 X/Twitter 链接内（v2.7.2：@handle 文字被染成同款橙色）和内含账号链接的
   // span（v2.7.4：「回复 @某人」标签外层黄色 span 把链接包在里面，真机日志
   // 实证污染备注缓存），以及校验不通过的候选，继续找下一个，
   // 这样无效橙色不会挡住后面的昵称反查。
   function findOrangeRemarkSpan(scope, handleLower) {
+    const matches = [];
     for (const span of scope.querySelectorAll('span')) {
       if (span.closest(social.BODY_SELECTOR)) continue;
       // 真备注永远是纯文本；span 里包着 x.com/twitter.com 链接的一定是
       // 「回复 @某人」这类标签外壳，不是备注。
       let wrapsProfileLink = false;
       for (const link of span.querySelectorAll('a')) {
-        if (/x\.com|twitter\.com/i.test(String(link.getAttribute('href') || ''))) {
+        if (profileHandleFromHref(link.getAttribute('href'))) {
           wrapsProfileLink = true;
           break;
         }
       }
       if (wrapsProfileLink) continue;
       const anchorOwner = span.closest('a');
-      if (anchorOwner && /^https?:\/\/(x|twitter)\.com\//i.test(String(anchorOwner.getAttribute('href') || ''))) continue;
-      const text = cleanText(span.textContent);
-      if (!text || text.length > 80) continue;
+      if (anchorOwner && profileHandleFromHref(anchorOwner.getAttribute('href'))) continue;
+      const text = normalizeRemarkText(span.textContent, handleLower);
+      if (!text) continue;
       if (!isRemarkOrange(span)) continue;
-      if (!isValidRemarkText(text, handleLower)) continue;
-      return span;
+      matches.push({ span, text, nested: span.querySelectorAll('span').length });
     }
-    return null;
+    // querySelectorAll is outer-first. Prefer the smallest/deepest orange node so
+    // a valid inner remark wins over an inherited-color wrapper around the header.
+    matches.sort((left, right) => left.nested - right.nested || left.text.length - right.text.length);
+    return matches[0]?.span || null;
   }
 
   function captureTwitterRemark(handleAnchor, scope) {
     if (!handleAnchor || !scope?.contains?.(handleAnchor)) return;
-    let handleLower = '';
-    try {
-      const url = new URL(String(handleAnchor.getAttribute('href') || ''), location.href);
-      const parts = url.pathname.split('/').filter(Boolean);
-      if (parts.length === 1) handleLower = parts[0].toLowerCase();
-    } catch (error) {
-      return;
-    }
+    const handleLower = profileHandleFromHref(handleAnchor.getAttribute('href'));
     if (!handleLower) return;
 
     let node = handleAnchor.parentElement;
@@ -966,8 +990,8 @@
     if (stored && typeof stored === 'object') {
       for (const [handle, remark] of Object.entries(stored)) {
         const normalizedHandle = normalizeHandleKey(handle);
-        const text = typeof remark === 'string' ? cleanText(remark) : '';
-        if (normalizedHandle && isValidRemarkText(text, normalizedHandle)) {
+        const text = typeof remark === 'string' ? normalizeRemarkText(remark, normalizedHandle) : '';
+        if (normalizedHandle && text) {
           social.remarkMap.set(normalizedHandle, text);
         }
       }
@@ -976,18 +1000,21 @@
     for (const [key, value] of Object.entries(data || {})) {
       if (key.startsWith(social.REMARK_ITEM_PREFIX) && typeof value === 'string') {
         const handle = normalizeHandleKey(key.slice(social.REMARK_ITEM_PREFIX.length));
-        const text = cleanText(value);
+        const text = normalizeRemarkText(value, handle);
         if (!handle) continue;
-        if (!isValidRemarkText(text, handle)) {
+        if (!text) {
           social.remarkMap.delete(handle);
           try { chrome.storage.local.remove(key).catch(() => {}); } catch (error) {}
           continue;
         }
         social.remarkMap.set(handle, text);
+        if (text !== cleanText(value)) {
+          try { chrome.storage.local.set({ [key]: text }).catch(() => {}); } catch (error) {}
+        }
       } else if (key.startsWith(social.REMARK_NICK_PREFIX) && typeof value === 'string') {
         const nick = normalizeNickKey(key.slice(social.REMARK_NICK_PREFIX.length));
         const handle = normalizeHandleKey(value);
-        if (nick && handle) {
+        if (nick && handle && !social.ambiguousNickKeys.has(nick)) {
           social.nickToHandleMap.set(nick, handle);
           social.persistedNickMap.set(nick, handle);
         }
@@ -1039,19 +1066,23 @@
     const legacy = changes[social.REMARK_STORAGE_KEY]?.newValue;
     if (legacy && typeof legacy === 'object') {
       for (const [handle, remark] of Object.entries(legacy)) {
-        const key = String(handle).toLowerCase();
-        const text = typeof remark === 'string' ? cleanText(remark) : '';
+        const key = normalizeHandleKey(handle);
+        const text = typeof remark === 'string' ? normalizeRemarkText(remark, key) : '';
         // 合并前同样过校验，别让其他标签页快照里的回复标签等脏项扩散到本页。
-        if (text && isValidRemarkText(text, key)) social.remarkMap.set(key, text);
+        if (key && text) social.remarkMap.set(key, text);
       }
     }
     for (const [key, change] of Object.entries(changes)) {
       if (key.startsWith(social.REMARK_ITEM_PREFIX)) {
         const handle = normalizeHandleKey(key.slice(social.REMARK_ITEM_PREFIX.length));
-        const text = typeof change.newValue === 'string' ? cleanText(change.newValue) : '';
-        if (handle && isValidRemarkText(text, handle)) {
+        const rawText = typeof change.newValue === 'string' ? cleanText(change.newValue) : '';
+        const text = normalizeRemarkText(rawText, handle);
+        if (handle && text) {
           social.remarkMap.set(handle, text);
-        } else if (handle && text) {
+          if (text !== rawText) {
+            try { chrome.storage.local.set({ [key]: text }).catch(() => {}); } catch (error) {}
+          }
+        } else if (handle && rawText) {
           social.remarkMap.delete(handle);
           try { chrome.storage.local.remove(key).catch(() => {}); } catch (error) {}
         } else if (handle && change.newValue === undefined) {
@@ -1061,7 +1092,7 @@
       } else if (key.startsWith(social.REMARK_NICK_PREFIX)) {
         const nick = normalizeNickKey(key.slice(social.REMARK_NICK_PREFIX.length));
         const handle = normalizeHandleKey(change.newValue);
-        if (nick && handle) {
+        if (nick && handle && !social.ambiguousNickKeys.has(nick)) {
           social.nickToHandleMap.set(nick, handle);
           social.persistedNickMap.set(nick, handle);
         } else if (nick && change.newValue === undefined) {
@@ -1161,7 +1192,9 @@
   }
 
   function normalizeHandleKey(value) {
-    return String(value || '').trim().toLowerCase().replace(/^@+/, '');
+    const handle = String(value || '').trim().toLowerCase().replace(/^@+/, '');
+    if (!/^[a-z0-9_]{1,15}$/.test(handle) || handle === 'unknown') return '';
+    return handle;
   }
 
   // WS 帧里 id/tw 字段的实际内容不受我们控制（可能是 handle 也可能是数字 ID），
@@ -1229,17 +1262,40 @@
   }
 
   function buildTwitterAnnouncement(triggers) {
-    const counts = new Map();
+    const identities = new Map();
     for (const trigger of Array.isArray(triggers) ? triggers : []) {
+      const candidateKeys = remarkCandidateKeys(trigger);
       let spokenName = resolveSpokenName(trigger);
+      const usedRemark = !!spokenName;
       if (spokenName) {
-        console.debug('[DSM speak] 备注命中 →', spokenName, '| key:', remarkCandidateKeys(trigger).join(','));
+        console.debug('[DSM speak] 备注命中 →', spokenName, '| key:', candidateKeys.join(','));
       } else {
         spokenName = sanitizeSpokenAuthor(trigger?.name || trigger?.id);
-        if (spokenName) console.debug('[DSM speak] 无备注，回退昵称 →', spokenName, '| key:', remarkCandidateKeys(trigger).join(','));
+        if (spokenName) console.debug('[DSM speak] 无备注，回退昵称 →', spokenName, '| key:', candidateKeys.join(','));
       }
       if (!spokenName) continue;
-      counts.set(spokenName, (counts.get(spokenName) || 0) + 1);
+
+      // Merge by account identity before formatting labels. If duplicate WS rows
+      // resolve at different times, a GMGN remark replaces the fallback handle
+      // for that identity instead of both names being spoken together.
+      const identity = candidateKeys.find((key) => social.remarkMap.has(key))
+        || normalizeHandleKey(trigger?.id)
+        || normalizeHandleKey(trigger?.tw)
+        || `nick:${normalizeNickKey(trigger?.name)}`;
+      const current = identities.get(identity);
+      if (!current) {
+        identities.set(identity, { name: spokenName, count: 1, usedRemark });
+      } else {
+        current.count += 1;
+        if (usedRemark && !current.usedRemark) {
+          current.name = spokenName;
+          current.usedRemark = true;
+        }
+      }
+    }
+    const counts = new Map();
+    for (const item of identities.values()) {
+      counts.set(item.name, (counts.get(item.name) || 0) + item.count);
     }
     const labels = Array.from(counts.entries())
       .sort(([left], [right]) => left.localeCompare(right))
@@ -1595,9 +1651,13 @@
 
   function handleSearchRouteResponse(response, query) {
     if (response && response.ok) {
+      if (response.action === 'detail' && response.platform === 'axiom') {
+        showSelectionRouteToast(`Axiom K 线详情：${query}`, true);
+        return;
+      }
       const targetName = response.platform === 'axiom' ? 'Axiom' : 'GMGN';
       showSelectionRouteToast(`${targetName} 代币搜索：${query}`, true);
-    } else if (response?.reason === 'no-axiom-search-page' || response?.platform === 'axiom') {
+    } else if (response?.reason === 'no-axiom-search-page' || response?.reason === 'no-axiom-page' || response?.platform === 'axiom') {
       showSelectionRouteToast('请先打开 Axiom 页面', false);
     } else {
       showSelectionRouteToast('未找到 GMGN 代币搜索框', false);
@@ -1925,7 +1985,10 @@
         const ca = extractClipboardSolanaCA(await navigator.clipboard.readText());
         if (!ca) return showSelectionRouteToast('剪贴板中没有有效 Solana CA', false);
         const result = await sendAxiomHotkeyMessage({ type: 'DSM_AXIOM_OPEN_CA', ca });
-        if (!result?.ok) showSelectionRouteToast('Axiom 未找到该 CA', false);
+        if (!result?.ok) {
+          const notFound = result?.reason === 'axiom-token-result-not-found';
+          showSelectionRouteToast(notFound ? 'Axiom 未找到该 CA' : 'Axiom K 线跳转失败，请重试', false);
+        }
       } catch (error) {
         showSelectionRouteToast('无法读取剪贴板，请检查扩展权限', false);
       }

@@ -1,6 +1,6 @@
 'use strict';
 
-// DSM-gmgn v2.9.0 — GMGN/Axiom trading helpers + GMGN Edge-TTS playback.
+// DSM-gmgn v2.9.1 — GMGN/Axiom trading helpers + GMGN Edge-TTS playback.
 const recentSpeech = new Map();
 const DEDUPE_MS = 60 * 1000;
 let lastSearchTargetTabId = null;
@@ -16,6 +16,17 @@ const SUPPORTED_TAB_URLS = [
   'https://axiom.trade/*',
   'https://*.axiom.trade/*'
 ];
+const AXIOM_TAB_URLS = [
+  'https://axiom.trade/*',
+  'https://*.axiom.trade/*'
+];
+const TOKEN_CA_RE = /^(?:0x[a-fA-F0-9]{40}|[1-9A-HJ-NP-Za-km-z]{32,44})$/;
+
+function normalizeTokenCA(value) {
+  const ca = String(value || '').trim();
+  if (!TOKEN_CA_RE.test(ca)) return '';
+  return /^0x/i.test(ca) ? ca.toLowerCase() : ca;
+}
 
 function appendRuntimeLog(entry = {}) {
   const record = {
@@ -243,6 +254,59 @@ async function findCrossTabSearchTarget(senderTab, preferredPlatform = 'gmgn') {
     return { tab, probe, score };
   }));
   return probed.filter(Boolean).sort((a, b) => b.score - a.score)[0] || null;
+}
+
+async function findAxiomNavigationTarget(senderTab) {
+  let tabs = [];
+  try {
+    tabs = await chrome.tabs.query({ url: AXIOM_TAB_URLS });
+  } catch (error) {
+    return null;
+  }
+
+  const senderId = senderTab?.id;
+  const senderWindowId = senderTab?.windowId;
+  const scored = tabs.filter((tab) => tab?.id != null).map((tab) => {
+    let score = 0;
+    if (tab.id === lastSearchTargetTabId && tab.id !== senderId) score += 1000;
+    if (senderWindowId != null && tab.windowId !== senderWindowId) score += 320;
+    if (tab.id !== senderId) score += 80;
+    if (tab.active) score += 160;
+    if (tab.status === 'complete') score += 20;
+    return { tab, score };
+  });
+  return scored.sort((a, b) => b.score - a.score)[0] || null;
+}
+
+async function navigateAxiomTokenDetails(target, ca) {
+  if (!target?.tab?.id || !ca) return { ok: false, action: 'detail', platform: 'axiom', reason: 'invalid-axiom-navigation' };
+  try {
+    // Keep the already authenticated Axiom document alive. A direct tabs.update
+    // to /meme/{CA} performs a full document request, which can land on Axiom's
+    // Cloudflare shell as a blank page. Activate the tab, then let Axiom's own
+    // search result drive its client-side router to the canonical detail URL.
+    await chrome.tabs.update(target.tab.id, { active: true });
+    const routed = await executeRealAxiomSearch(target.tab.id, ca, true);
+    if (!routed?.ok || !routed?.opened) {
+      return {
+        ok: false,
+        action: 'detail',
+        platform: 'axiom',
+        reason: routed?.reason || 'axiom-detail-navigation-failed'
+      };
+    }
+    return {
+      ok: true,
+      action: 'detail',
+      platform: 'axiom',
+      targetTabId: target.tab.id,
+      targetWindowId: target.tab.windowId,
+      targetUrl: routed.url || '',
+      resolvedHref: routed.resolvedHref || ''
+    };
+  } catch (error) {
+    return { ok: false, action: 'detail', platform: 'axiom', reason: String(error?.message || error || 'axiom-navigation-failed') };
+  }
 }
 
 async function executeRealGmgnSearch(tabId, query) {
@@ -541,6 +605,7 @@ async function executeRealAxiomSearch(tabId, query, openFirstResult = false) {
         if (!q) return { ok: false, reason: 'empty' };
 
         const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+        const initialHref = location.href;
         const visible = (element) => {
           if (!element || !element.isConnected) return false;
           const rect = element.getBoundingClientRect();
@@ -601,6 +666,79 @@ async function executeRealAxiomSearch(tabId, query, openFirstResult = false) {
           catch (error) { input.dispatchEvent(new Event('input', { bubbles: true, composed: true })); }
           input.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
         };
+        const currentRouteMatches = () => {
+          try {
+            const url = new URL(location.href);
+            const containsCA = decodeURIComponent(`${url.pathname}${url.search}${url.hash}`).includes(q);
+            // Accept Axiom route-shape changes as long as navigation left the
+            // original page and the resulting URL carries the exact CA. Known
+            // detail routes also count when C is pressed for the already-open CA.
+            return containsCA && (location.href !== initialHref || /\/(?:meme|token|trade)\//i.test(url.pathname));
+          } catch (error) {
+            return false;
+          }
+        };
+        const sameOriginDetailHref = (element) => {
+          const link = element?.matches?.('a[href]') ? element : element?.closest?.('a[href]');
+          if (!link) return '';
+          try {
+            const url = new URL(link.href, location.href);
+            const decoded = decodeURIComponent(`${url.pathname}${url.search}${url.hash}`);
+            return url.origin === location.origin && decoded.includes(q) ? url.href : '';
+          } catch (error) {
+            return '';
+          }
+        };
+        const clickableFor = (element) => {
+          if (!element) return null;
+          const owner = element.closest?.('a[href],button,[role="button"]');
+          if (owner && visible(owner)) return owner;
+          const child = Array.from(element.querySelectorAll?.('a[href],button,[role="button"]') || []).find(visible);
+          return child || (visible(element) ? element : null);
+        };
+        const findExactTokenResult = (currentInput) => {
+          // Strongest signal: Axiom's own same-origin result link contains the
+          // complete CA. This automatically follows route changes (slug/pool
+          // suffixes included) instead of guessing /meme/{CA} ourselves.
+          const links = Array.from(document.querySelectorAll('a[href]')).filter(visible);
+          const exactLink = links.find((link) => sameOriginDetailHref(link));
+          if (exactLink) return { target: exactLink, href: sameOriginDetailHref(exactLink) };
+
+          // Current builds also expose the full address on result-row data/title
+          // attributes even when visible text truncates it.
+          const escaped = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(q) : q.replace(/["\\]/g, '\\$&');
+          for (const selector of [
+            `[data-address="${escaped}"]`, `[data-ca="${escaped}"]`,
+            `[data-mint="${escaped}"]`, `[data-token-address="${escaped}"]`,
+            `[title="${escaped}"]`
+          ]) {
+            let nodes = [];
+            try { nodes = Array.from(document.querySelectorAll(selector)); } catch (error) {}
+            const node = nodes.find((candidate) => visible(candidate) || visible(clickableFor(candidate)));
+            const target = clickableFor(node);
+            if (target) return { target, href: sameOriginDetailHref(target) };
+          }
+
+          // Text fallback for layouts that render the complete CA in a row.
+          const rows = Array.from(document.querySelectorAll('a[href],button,[role="button"],li,tr'))
+            .filter((row) => visible(row) && String(row.textContent || '').includes(q));
+          if (rows.length) {
+            const target = clickableFor(rows[0]);
+            if (target) return { target, href: sameOriginDetailHref(target) };
+          }
+
+          // Last-resort structural fallback: choose the first non-loading row in
+          // the result panel, but click its real nested control when present.
+          const panel = currentInput?.parentElement?.parentElement;
+          const resultList = panel?.lastElementChild;
+          const row = Array.from(resultList?.children || []).find((candidate) =>
+            visible(candidate)
+              && !candidate.querySelector('.animate-pulse')
+              && !/no results/i.test(String(candidate.textContent || ''))
+              && String(candidate.textContent || '').trim());
+          const target = clickableFor(row);
+          return target ? { target, href: sameOriginDetailHref(target) } : null;
+        };
 
         const launcher = findLauncher();
         if (!launcher) return { ok: false, reason: 'axiom-search-launcher-not-found' };
@@ -653,19 +791,44 @@ async function executeRealAxiomSearch(tabId, query, openFirstResult = false) {
 
         const accepted = input.isConnected && input.value === q;
         if (accepted && shouldOpenFirstResult) {
-          for (let i = 0; i < 80; i += 1) {
-            const currentInput = findInput();
-            const panel = currentInput?.parentElement?.parentElement;
-            const resultList = panel?.lastElementChild;
-            const firstResult = Array.from(resultList?.children || []).find((row) =>
-              visible(row) && !row.querySelector('.animate-pulse') && String(row.textContent || '').trim());
-            if (firstResult) {
-              activate(firstResult);
-              return { ok: true, value: q, browserEdited, opened: true };
-            }
-            await wait(i < 24 ? 50 : 100);
+          if (currentRouteMatches()) {
+            return { ok: true, value: q, browserEdited, opened: true, url: location.href, alreadyOpen: true };
           }
-          return { ok: false, value: input.value || '', browserEdited, reason: 'axiom-token-result-not-found' };
+          let resolvedHref = '';
+          let lastClickAt = 0;
+          for (let i = 0; i < 100; i += 1) {
+            if (currentRouteMatches()) {
+              return { ok: true, value: q, browserEdited, opened: true, url: location.href, resolvedHref };
+            }
+            const currentInput = findInput();
+            const result = findExactTokenResult(currentInput);
+            if (result?.target && (lastClickAt === 0 || Date.now() - lastClickAt >= 650)) {
+              resolvedHref = result.href || resolvedHref;
+              lastClickAt = Date.now();
+              activate(result.target);
+            }
+            await wait(i < 30 ? 50 : 90);
+          }
+
+          // Keyboard-selection fallback for Axiom builds whose result rows do not
+          // expose an anchor/clickable role. Success still requires route proof.
+          try {
+            input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, composed: true }));
+            input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true, composed: true }));
+          } catch (error) {}
+          for (let i = 0; i < 30; i += 1) {
+            if (currentRouteMatches()) {
+              return { ok: true, value: q, browserEdited, opened: true, url: location.href, resolvedHref, usedEnter: true };
+            }
+            await wait(60);
+          }
+          return {
+            ok: false,
+            value: input.value || '',
+            browserEdited,
+            resolvedHref,
+            reason: resolvedHref ? 'axiom-route-not-confirmed' : 'axiom-token-result-not-found'
+          };
         }
         return {
           ok: accepted,
@@ -765,6 +928,19 @@ async function routeCrossTabSearch(query, sender, preferAxiom = false) {
   const senderId = senderTab?.id;
   const preferredPlatform = preferAxiom ? 'axiom' : 'gmgn';
 
+  // A CA is already an unambiguous token identity. Sending it through Axiom's
+  // search UI leaves the user on a result modal and depends on controlled-input
+  // behavior. Navigate the selected Axiom tab straight to its canonical K-line
+  // detail route instead. Names and tickers continue to use global search.
+  const axiomCA = preferAxiom ? normalizeTokenCA(query) : '';
+  if (axiomCA) {
+    const target = await findAxiomNavigationTarget(senderTab);
+    if (!target) return { ok: false, action: 'detail', platform: 'axiom', reason: 'no-axiom-page' };
+    const result = await navigateAxiomTokenDetails(target, axiomCA);
+    if (result?.ok) lastSearchTargetTabId = target.tab.id;
+    return result;
+  }
+
   if (lastSearchTargetTabId != null && lastSearchTargetTabId !== senderId) {
     const probe = await sendTabMessage(lastSearchTargetTabId, { type: 'DSM_PROBE_GMGN_SEARCH_TARGET' }, 260);
     if (probe?.hasGlobalSearch && probe.platform === preferredPlatform) {
@@ -807,9 +983,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const query = String(message.query || '').trim().slice(0, 80);
     if (!query) { sendResponse({ ok: false, reason: 'empty-query' }); return; }
     routeCrossTabSearch(query, sender, message.preferAxiom === true).then((result) => {
+      const detailRoute = result?.action === 'detail';
       appendRuntimeLog({
-        level: result?.ok ? 'success' : 'error', category: '跨屏搜索',
-        title: result?.ok ? '关键词已发送' : '关键词发送失败',
+        level: result?.ok ? 'success' : 'error', category: detailRoute ? 'K线跳转' : '跨屏搜索',
+        title: detailRoute
+          ? (result?.ok ? 'Axiom K线已打开' : 'Axiom K线跳转失败')
+          : (result?.ok ? '关键词已发送' : '关键词发送失败'),
         detail: result?.ok ? query : `${query} · ${result?.reason || '未知原因'}`
       });
       sendResponse(result);
@@ -822,18 +1001,31 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === 'DSM_AXIOM_OPEN_CA') {
-    const ca = String(message.ca || '').trim();
+    const ca = normalizeTokenCA(message.ca);
     const host = (() => { try { return new URL(sender?.url || '').hostname; } catch (error) { return ''; } })();
     if (!Number.isInteger(sender?.tab?.id) || (host !== 'axiom.trade' && !host.endsWith('.axiom.trade'))) {
       sendResponse({ ok: false, reason: 'axiom-page-required' });
       return;
     }
-    if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(ca)) {
+    if (!ca || /^0x/i.test(ca)) {
       sendResponse({ ok: false, reason: 'invalid-solana-ca' });
       return;
     }
-    executeRealAxiomSearch(sender.tab.id, ca, true).then(sendResponse).catch((error) => {
-      sendResponse({ ok: false, reason: String(error?.message || error || 'axiom-open-failed') });
+    // C is a navigation shortcut, not a search shortcut. A CA is already an
+    // exact identity, so route the current Axiom tab straight to the K-line page
+    // and completely bypass the search modal/result-click chain.
+    navigateAxiomTokenDetails({ tab: sender.tab }, ca).then((result) => {
+      appendRuntimeLog({
+        level: result?.ok ? 'success' : 'error',
+        category: 'C键跳转',
+        title: result?.ok ? 'Axiom K线已打开' : 'Axiom K线跳转失败',
+        detail: result?.ok ? `${ca} · ${result.targetUrl || result.resolvedHref || ''}` : `${ca} · ${result?.reason || '未知原因'}`
+      });
+      sendResponse(result);
+    }).catch((error) => {
+      const reason = String(error?.message || error || 'axiom-open-failed');
+      appendRuntimeLog({ level: 'error', category: 'C键跳转', title: 'Axiom K线跳转异常', detail: `${ca} · ${reason}` });
+      sendResponse({ ok: false, reason });
     });
     return true;
   }
