@@ -2,7 +2,7 @@
   'use strict';
 
   // ============================================================
-  // DSM-gmgn v2.8.1 Content Script
+  // DSM-gmgn v2.8.2 Content Script
   // 原插件 1：GMGN 已看 CA 标记（jiankongtiao）
   // 原插件 2：GMGN 5秒极速辅助决策（GMGN-5s-Decision / C:\repo 圆形倒计时版）
   // 设计目标：功能可开关、设置持久化、UI 对齐 DataStorm、尽量不拖慢 GMGN 页面。
@@ -828,9 +828,22 @@
     return `${social.REMARK_ITEM_PREFIX}${handleLower}`;
   }
 
+  // 备注候选必须像“人起的名字”：GMGN 现在把 @handle 链接文字、"$6.9M" 徽标和
+  // 「回复 @某人」标签（text-yellow-100 与备注同款色，真机日志实证被念成
+  // “回复 XXX 发推啦”）都渲染成同款橙色。硬校验：与锚点句柄相同（忽略 @ 和
+  // 大小写）、纯金额/数字徽标、回复标签形状（回复/Reply 开头）的文本，一律拒绝。
+  function isValidRemarkText(text, handleLower) {
+    const value = cleanText(text);
+    if (!value) return false;
+    if (value.toLowerCase().replace(/^@+/, '') === handleLower) return false;
+    if (/^[$€£￥]?\d+(?:[.,]\d+)?\s*[kmb]?$/i.test(value)) return false;
+    if (/^回复/.test(value) || /^repl/i.test(value)) return false;
+    return true;
+  }
+
   function rememberRemark(handleLower, remark) {
     const text = cleanText(remark).slice(0, 80);
-    if (!handleLower || !text) return;
+    if (!handleLower || !text || !isValidRemarkText(text, handleLower)) return;
     if (social.remarkMap.get(handleLower) === text) return;
     // 先 delete 再 set，让最近捕获的备注保持在 Map 尾部，便于诊断时查看。
     social.remarkMap.delete(handleLower);
@@ -874,13 +887,31 @@
   }
 
   // 备注是 GMGN 的内联橙色样式，颜色本身是唯一可靠信号：不再要求特定类名，
-  // 避免备注 span 与普通昵称类名不一致时永远抓不到。跳过推文正文里的高亮词。
-  function findOrangeRemarkSpan(scope) {
+  // 避免备注 span 与普通昵称类名不一致时永远抓不到。跳过推文正文里的高亮词；
+  // 跳过 x.com 链接内（v2.7.2：@handle 文字被染成同款橙色）和内含 x.com 链接的
+  // span（v2.7.4：「回复 @某人」标签外层黄色 span 把链接包在里面，真机日志
+  // 实证污染备注缓存），以及校验不通过的候选，继续找下一个，
+  // 这样无效橙色不会挡住后面的昵称反查。
+  function findOrangeRemarkSpan(scope, handleLower) {
     for (const span of scope.querySelectorAll('span')) {
       if (span.closest(social.BODY_SELECTOR)) continue;
+      // 真备注永远是纯文本；span 里包着 x.com/twitter.com 链接的一定是
+      // 「回复 @某人」这类标签外壳，不是备注。
+      let wrapsProfileLink = false;
+      for (const link of span.querySelectorAll('a')) {
+        if (/x\.com|twitter\.com/i.test(String(link.getAttribute('href') || ''))) {
+          wrapsProfileLink = true;
+          break;
+        }
+      }
+      if (wrapsProfileLink) continue;
+      const anchorOwner = span.closest('a');
+      if (anchorOwner && /^https?:\/\/(x|twitter)\.com\//i.test(String(anchorOwner.getAttribute('href') || ''))) continue;
       const text = cleanText(span.textContent);
       if (!text || text.length > 80) continue;
-      if (isRemarkOrange(span)) return span;
+      if (!isRemarkOrange(span)) continue;
+      if (!isValidRemarkText(text, handleLower)) continue;
+      return span;
     }
     return null;
   }
@@ -903,8 +934,8 @@
       const handles = profileHandleAnchors(node);
       if (handles.length > 1) break; // 越过卡片进入列表容器，避免误配他人
 
-      // 命中橙色即写入缓存；从最内层向外找，优先取离 handle 最近的那个。
-      const orange = findOrangeRemarkSpan(node);
+      // 命中有效橙色即写入缓存；从最内层向外找，优先取离 handle 最近的那个。
+      const orange = findOrangeRemarkSpan(node, handleLower);
       if (orange) {
         rememberRemark(handleLower, orange.textContent);
         // 有些 WS 帧的 id/tw 不是页面 handle；同时保存同卡片昵称别名，后续可由
@@ -934,8 +965,10 @@
     const stored = data?.[social.REMARK_STORAGE_KEY];
     if (stored && typeof stored === 'object') {
       for (const [handle, remark] of Object.entries(stored)) {
-        if (typeof remark === 'string' && cleanText(remark)) {
-          social.remarkMap.set(normalizeHandleKey(handle), cleanText(remark));
+        const normalizedHandle = normalizeHandleKey(handle);
+        const text = typeof remark === 'string' ? cleanText(remark) : '';
+        if (normalizedHandle && isValidRemarkText(text, normalizedHandle)) {
+          social.remarkMap.set(normalizedHandle, text);
         }
       }
     }
@@ -944,7 +977,13 @@
       if (key.startsWith(social.REMARK_ITEM_PREFIX) && typeof value === 'string') {
         const handle = normalizeHandleKey(key.slice(social.REMARK_ITEM_PREFIX.length));
         const text = cleanText(value);
-        if (handle && text) social.remarkMap.set(handle, text);
+        if (!handle) continue;
+        if (!isValidRemarkText(text, handle)) {
+          social.remarkMap.delete(handle);
+          try { chrome.storage.local.remove(key).catch(() => {}); } catch (error) {}
+          continue;
+        }
+        social.remarkMap.set(handle, text);
       } else if (key.startsWith(social.REMARK_NICK_PREFIX) && typeof value === 'string') {
         const nick = normalizeNickKey(key.slice(social.REMARK_NICK_PREFIX.length));
         const handle = normalizeHandleKey(value);
@@ -1000,16 +1039,21 @@
     const legacy = changes[social.REMARK_STORAGE_KEY]?.newValue;
     if (legacy && typeof legacy === 'object') {
       for (const [handle, remark] of Object.entries(legacy)) {
+        const key = String(handle).toLowerCase();
         const text = typeof remark === 'string' ? cleanText(remark) : '';
-        if (text) social.remarkMap.set(String(handle).toLowerCase(), text);
+        // 合并前同样过校验，别让其他标签页快照里的回复标签等脏项扩散到本页。
+        if (text && isValidRemarkText(text, key)) social.remarkMap.set(key, text);
       }
     }
     for (const [key, change] of Object.entries(changes)) {
       if (key.startsWith(social.REMARK_ITEM_PREFIX)) {
         const handle = normalizeHandleKey(key.slice(social.REMARK_ITEM_PREFIX.length));
         const text = typeof change.newValue === 'string' ? cleanText(change.newValue) : '';
-        if (handle && text) {
+        if (handle && isValidRemarkText(text, handle)) {
           social.remarkMap.set(handle, text);
+        } else if (handle && text) {
+          social.remarkMap.delete(handle);
+          try { chrome.storage.local.remove(key).catch(() => {}); } catch (error) {}
         } else if (handle && change.newValue === undefined) {
           // 只有明确删除对应 V2 存储项时才删除，普通昵称渲染不再触发删除。
           social.remarkMap.delete(handle);

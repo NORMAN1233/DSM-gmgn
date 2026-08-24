@@ -1,6 +1,6 @@
 'use strict';
 
-// DSM-gmgn v2.8.1 — GMGN/Axiom trading helpers + GMGN Edge-TTS playback.
+// DSM-gmgn v2.8.2 — GMGN/Axiom trading helpers + GMGN Edge-TTS playback.
 const recentSpeech = new Map();
 const DEDUPE_MS = 60 * 1000;
 let lastSearchTargetTabId = null;
