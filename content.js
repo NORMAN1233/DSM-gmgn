@@ -779,14 +779,16 @@
     return `${social.REMARK_ITEM_PREFIX}${handleLower}`;
   }
 
-  // 备注候选必须像“人起的名字”：GMGN 现在把 @handle 链接文字和 "$6.9M" 徽标也
-  // 渲染成同款橙色，真机上已被误抓进缓存，导致播报直接念句柄。两道硬校验：
-  // 与锚点句柄相同（忽略 @ 和大小写）的文本、纯金额/数字徽标，一律拒绝。
+  // 备注候选必须像“人起的名字”：GMGN 现在把 @handle 链接文字、"$6.9M" 徽标和
+  // 「回复 @某人」标签（text-yellow-100 与备注同款色，真机日志实证被念成
+  // “回复 XXX 发推啦”）都渲染成同款橙色。硬校验：与锚点句柄相同（忽略 @ 和
+  // 大小写）、纯金额/数字徽标、回复标签形状（回复/Reply 开头）的文本，一律拒绝。
   function isValidRemarkText(text, handleLower) {
     const value = cleanText(text);
     if (!value) return false;
     if (value.toLowerCase().replace(/^@+/, '') === handleLower) return false;
     if (/^[$€£￥]?\d+(?:[.,]\d+)?\s*[kmb]?$/i.test(value)) return false;
+    if (/^回复/.test(value) || /^repl/i.test(value)) return false;
     return true;
   }
 
@@ -821,12 +823,23 @@
 
   // 备注是 GMGN 的内联橙色样式，颜色本身是唯一可靠信号：不再要求特定类名，
   // 避免备注 span 与普通昵称类名不一致时永远抓不到。跳过推文正文里的高亮词；
-  // 跳过 x.com 链接内的 span（当前 GMGN 把 @handle 文字染成同款橙色，真机已
-  // 复现误存）和校验不通过的候选（句柄等值文本/金额徽标），继续找下一个，
+  // 跳过 x.com 链接内（v2.7.2：@handle 文字被染成同款橙色）和内含 x.com 链接的
+  // span（v2.7.4：「回复 @某人」标签外层黄色 span 把链接包在里面，真机日志
+  // 实证污染备注缓存），以及校验不通过的候选，继续找下一个，
   // 这样无效橙色不会挡住后面的昵称反查。
   function findOrangeRemarkSpan(scope, handleLower) {
     for (const span of scope.querySelectorAll('span')) {
       if (span.closest(social.BODY_SELECTOR)) continue;
+      // 真备注永远是纯文本；span 里包着 x.com/twitter.com 链接的一定是
+      // 「回复 @某人」这类标签外壳，不是备注。
+      let wrapsProfileLink = false;
+      for (const link of span.querySelectorAll('a')) {
+        if (/x\.com|twitter\.com/i.test(String(link.getAttribute('href') || ''))) {
+          wrapsProfileLink = true;
+          break;
+        }
+      }
+      if (wrapsProfileLink) continue;
       const anchorOwner = span.closest('a');
       if (anchorOwner && /^https?:\/\/(x|twitter)\.com\//i.test(String(anchorOwner.getAttribute('href') || ''))) continue;
       const text = cleanText(span.textContent);
@@ -881,8 +894,11 @@
         const stored = data?.[social.REMARK_STORAGE_KEY];
         if (stored && typeof stored === 'object') {
           for (const [handle, remark] of Object.entries(stored)) {
-            if (typeof remark === 'string' && cleanText(remark)) {
-              social.remarkMap.set(String(handle).toLowerCase(), cleanText(remark));
+            const key = String(handle).toLowerCase();
+            const text = cleanText(remark);
+            // 旧版整表同样可能存有句柄/回复标签等脏项，读取时一并校验。
+            if (text && isValidRemarkText(text, key)) {
+              social.remarkMap.set(key, text);
             }
           }
         }
@@ -931,8 +947,10 @@
     const legacy = changes[social.REMARK_STORAGE_KEY]?.newValue;
     if (legacy && typeof legacy === 'object') {
       for (const [handle, remark] of Object.entries(legacy)) {
+        const key = String(handle).toLowerCase();
         const text = typeof remark === 'string' ? cleanText(remark) : '';
-        if (text) social.remarkMap.set(String(handle).toLowerCase(), text);
+        // 合并前同样过校验，别让其他标签页快照里的回复标签等脏项扩散到本页。
+        if (text && isValidRemarkText(text, key)) social.remarkMap.set(key, text);
       }
     }
     for (const [key, change] of Object.entries(changes)) {
