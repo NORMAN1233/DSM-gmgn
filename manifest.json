@@ -1,0 +1,76 @@
+{
+  "manifest_version": 3,
+  "name": "DSM-gmgn",
+  "version": "2.9.8",
+  "description": "GMGN + Axiom 交易辅助：已看 CA、跨屏搜索、5 秒决策，以及 GMGN 推特监控播报。",
+  "permissions": [
+    "storage",
+    "scripting",
+    "offscreen"
+  ],
+  "host_permissions": [
+    "https://gmgn.ai/*",
+    "https://*.gmgn.ai/*",
+    "https://axiom.trade/*",
+    "https://*.axiom.trade/*",
+    "https://cloudflare-edge-tts.tech-melon.workers.dev/*"
+  ],
+  "icons": {
+    "128": "gmgn-logo.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://gmgn.ai/*",
+        "https://*.gmgn.ai/*"
+      ],
+      "js": [
+        "twitter-inject.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "https://axiom.trade/*",
+        "https://*.axiom.trade/*"
+      ],
+      "js": [
+        "axiom-native-paste.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "https://gmgn.ai/*",
+        "https://*.gmgn.ai/*",
+        "https://axiom.trade/*",
+        "https://*.axiom.trade/*"
+      ],
+      "css": [
+        "styles.css"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "DSM-gmgn",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "128": "gmgn-logo.png"
+    }
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; connect-src https://cloudflare-edge-tts.tech-melon.workers.dev; media-src 'self' blob:; object-src 'self';"
+  }
+}
