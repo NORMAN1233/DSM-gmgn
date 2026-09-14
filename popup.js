@@ -13,6 +13,7 @@ const DEFAULT_SETTINGS = {
   twitterVoiceVolume: 100,
   twitterVoiceName: 'zh-CN-XiaoxiaoNeural',
   twitterVoiceRate: 115,
+  officialWalletCopyEnabled: true,
   twitterNaturalPriority: true,
   selectionSearchEnabled: true,
   axiomPrimaryEnabled: false,
@@ -66,6 +67,7 @@ const els = {
   twitterVoiceRateValue: $('twitterVoiceRateValue'),
   twitterVoicePreview: $('twitterVoicePreview'),
   twitterVoiceCount: $('twitterVoiceCount'),
+  officialWalletCopyEnabled: $('officialWalletCopyEnabled'),
   selectionSearchEnabled: $('selectionSearchEnabled'),
   axiomPrimaryEnabled: $('axiomPrimaryEnabled'),
   decisionEnabled: $('decisionEnabled'),
@@ -124,6 +126,7 @@ function getSettingsFromControls() {
     twitterVoiceName: String(els.twitterVoiceName?.value || ''),
     twitterVoiceRate: [115, 150, 175].includes(Number(els.twitterVoiceRate?.value))
       ? Number(els.twitterVoiceRate.value) : 115,
+    officialWalletCopyEnabled: !!els.officialWalletCopyEnabled?.checked,
     selectionSearchEnabled: els.selectionSearchEnabled.checked,
     axiomPrimaryEnabled: els.axiomPrimaryEnabled.checked,
     decisionEnabled: els.decisionEnabled.checked,
@@ -267,6 +270,7 @@ function applySettings(settings) {
   const rate = [115, 150, 175].includes(Number(s.twitterVoiceRate)) ? Number(s.twitterVoiceRate) : 115;
   if (els.twitterVoiceRate) els.twitterVoiceRate.value = String(rate);
   if (els.twitterVoiceRateValue) els.twitterVoiceRateValue.textContent = `+${rate - 100}%`;
+  if (els.officialWalletCopyEnabled) els.officialWalletCopyEnabled.checked = !!s.officialWalletCopyEnabled;
   els.selectionSearchEnabled.checked = !!s.selectionSearchEnabled;
   els.axiomPrimaryEnabled.checked = !!s.axiomPrimaryEnabled;
   els.decisionEnabled.checked = !!s.decisionEnabled;
@@ -284,6 +288,7 @@ function applySettings(settings) {
   if (els.twitterVoiceName) els.twitterVoiceName.disabled = !masterOn || !s.twitterVoiceEnabled;
   if (els.twitterVoiceRate) els.twitterVoiceRate.disabled = !masterOn || !s.twitterVoiceEnabled;
   if (els.twitterVoicePreview) els.twitterVoicePreview.disabled = !masterOn || !s.twitterVoiceEnabled;
+  if (els.officialWalletCopyEnabled) els.officialWalletCopyEnabled.disabled = !masterOn;
   els.selectionSearchEnabled.disabled = !masterOn;
   els.axiomPrimaryEnabled.disabled = !masterOn || !s.selectionSearchEnabled;
   els.decisionEnabled.disabled = !masterOn;
@@ -430,6 +435,7 @@ function advancedSaveBindings() {
     [els.twitterVoiceVolume, 'twitterVoiceVolume'],
     [els.twitterVoiceName, 'twitterVoiceName'],
     [els.twitterVoiceRate, 'twitterVoiceRate'],
+    [els.officialWalletCopyEnabled, 'officialWalletCopyEnabled'],
     [els.selectionSearchEnabled, 'selectionSearchEnabled'],
     [els.axiomPrimaryEnabled, 'axiomPrimaryEnabled'],
     [els.decisionEnabled, 'decisionEnabled'],
@@ -448,7 +454,7 @@ function advancedSaveBindings() {
       if (els.masterEnabled.checked) {
         const messageEl = control === els.viewedEnabled
           ? els.viewedMessage
-          : (control === els.twitterVoiceEnabled || control === els.twitterVoiceVolume || control === els.twitterVoiceName || control === els.twitterVoiceRate || control === els.selectionSearchEnabled || control === els.axiomPrimaryEnabled
+          : (control === els.twitterVoiceEnabled || control === els.twitterVoiceVolume || control === els.twitterVoiceName || control === els.twitterVoiceRate || control === els.officialWalletCopyEnabled || control === els.selectionSearchEnabled || control === els.axiomPrimaryEnabled
             ? els.socialMessage
             : (control === els.decisionEnabled || control === els.batteryEnabled || control === els.countdownVoiceEnabled
               ? els.decisionMessage
@@ -470,6 +476,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
     twitterVoiceVolume: [els.twitterVoiceVolume],
     twitterVoiceName: [els.twitterVoiceName],
     twitterVoiceRate: [els.twitterVoiceRate],
+    officialWalletCopyEnabled: [els.officialWalletCopyEnabled],
     selectionSearchEnabled: [els.selectionSearchEnabled],
     axiomPrimaryEnabled: [els.axiomPrimaryEnabled],
     decisionEnabled: [els.decisionEnabled],
