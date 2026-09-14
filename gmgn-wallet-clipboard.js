@@ -27,7 +27,7 @@
   let enabled = true;
   let masterEnabled = true;
   let observer = null;
-  let flushTimer = null;
+  let flushScheduled = false;
   let bodyReadyListener = false;
   let scopeTimer = null;
   let walletMonitorActive = false;
@@ -35,6 +35,7 @@
   let observationRoot = null;
   // 以“行节点 -> 最近一次 CA”去重；GMGN 会复用同一行节点更新下一笔交易。
   const seenMessages = new WeakMap();
+  const copyRetries = new WeakMap();
   const recentCopies = new Map();
   const pendingNodes = new Set();
 
@@ -107,6 +108,10 @@
 
   function extractCA(root) {
     if (!root) return '';
+    if (root.matches?.('a[href]') && TOKEN_ROUTE_RE.test(root.getAttribute('href') || '')) {
+      const direct = candidateParts(root.getAttribute('href'));
+      if (direct.length) return direct[0];
+    }
     const nodes = [];
     if (root.nodeType === 1) nodes.push(root);
     try { nodes.push(...root.querySelectorAll('[data-address],[data-ca],[data-mint],[data-token-address],[data-contract-address]')); } catch (error) {}
@@ -186,7 +191,7 @@
 
   function tokenLinksIn(root) {
     const links = [];
-    if (root?.matches?.('a[href]') && TOKEN_ROUTE_RE.test(root.getAttribute('href') || '')) links.push(root);
+    if (root?.matches?.('a[href]') && TOKEN_ROUTE_RE.test(root.getAttribute('href') || '')) return [root];
     try {
       for (const link of root?.querySelectorAll?.('a[href]') || []) {
         if (TOKEN_ROUTE_RE.test(link.getAttribute('href') || '')) links.push(link);
@@ -261,9 +266,10 @@
         if (nested) pendingNodes.add(nested);
       } catch (error) {}
     }
-    if (!pendingNodes.size || flushTimer !== null) return;
-    flushTimer = setTimeout(() => {
-      flushTimer = null;
+    if (!pendingNodes.size || flushScheduled) return;
+    flushScheduled = true;
+    queueMicrotask(() => {
+      flushScheduled = false;
       const nodes = Array.from(pendingNodes);
       pendingNodes.clear();
       const roots = new Set();
@@ -272,7 +278,7 @@
         if (root) roots.add(root);
       }
       for (const root of roots) processMessage(root).catch(() => {});
-    }, 0);
+    });
   }
 
   async function copyToClipboard(value) {
@@ -313,6 +319,15 @@
     recentCopies.set(ca, Date.now());
     for (const [key, at] of recentCopies) if (Date.now() - at > 15000) recentCopies.delete(key);
     const copied = await copyToClipboard(ca);
+    if (!copied && !copyRetries.has(root)) {
+      // 页面刚插入新行时权限上下文偶尔尚未就绪，只重试一次，避免形成循环。
+      copyRetries.set(root, true);
+      seenMessages.delete(root);
+      recentCopies.delete(ca);
+      setTimeout(() => processMessage(root).catch(() => {}), 180);
+      return;
+    }
+    copyRetries.delete(root);
     try {
       window.dispatchEvent(new CustomEvent(RESULT_EVENT, { detail: { ca, copied } }));
     } catch (error) {}
@@ -401,10 +416,7 @@
   function stop() {
     observer?.disconnect();
     observer = null;
-    if (flushTimer !== null) {
-      clearTimeout(flushTimer);
-      flushTimer = null;
-    }
+    flushScheduled = false;
     pendingNodes.clear();
     if (scopeTimer !== null) {
       clearInterval(scopeTimer);
