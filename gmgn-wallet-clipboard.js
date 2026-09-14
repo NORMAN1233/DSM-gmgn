@@ -10,6 +10,13 @@
   const GENERIC_ADDRESS_RE = /^(?=.*\d)[A-Za-z0-9_-]{24,128}$/;
   const CA_MATCH_RE = /0x[a-fA-F0-9]{40,128}|[1-9A-HJ-NP-Za-km-z]{32,44}|[13][1-9A-HJ-NP-Za-km-z]{25,34}|[EU]Q[A-Za-z0-9_-]{46}/g;
   const TOKEN_ROUTE_RE = /\/(?:token|pump|meme|coin|pair|pool)(?:\/|$)|[?&#](?:token|mint|contract|ca)=/i;
+  const TOKEN_LINK_SELECTOR = [
+    'a[href*="/token/" i]', 'a[href*="/pump/" i]', 'a[href*="/meme/" i]',
+    'a[href*="/coin/" i]', 'a[href*="/pair/" i]', 'a[href*="/pool/" i]',
+    'a[href*="?token=" i]', 'a[href*="&token=" i]', 'a[href*="?mint=" i]',
+    'a[href*="&mint=" i]', 'a[href*="?contract=" i]', 'a[href*="&contract=" i]',
+    'a[href*="?ca=" i]', 'a[href*="&ca=" i]'
+  ].join(',');
   const WALLET_ROUTE_RE = /\/(?:address|wallet|user|account|profile|trader|follow|watchlist)(?:\/|$)/i;
   const TOKEN_ATTRS = ['data-ca', 'data-mint', 'data-token-address', 'data-contract-address'];
   const WALLET_MARKER_RE = /官方\s*钱包|钱包监控|钱包动态|钱包提醒|wallet(?:[-_\s]*(?:monitor|activity|alert|watch|notification|message|event))?|smart[-_\s]*money|copy[-_\s]*trade|跟单|交易提醒|新交易|买入|卖出|swap|bought|sold|received|sent/i;
@@ -22,11 +29,18 @@
     '[class*="toast" i]', '[class*="notification" i]', '[class*="notify" i]',
     '[class*="popup" i]', '[class*="wallet" i]', '[class*="message" i]'
   ].join(',');
+  const WALLET_BOOTSTRAP_SELECTOR = [
+    '[data-testid*="wallet" i]', '[data-testid*="follow" i]',
+    '[class*="wallet" i]', '[class*="follow" i]',
+    '[aria-label*="wallet" i]', '[aria-label*="钱包" i]'
+  ].join(',');
   const MONITOR_PATH_RE = /(?:wallet|monitor|follow|watch|tracker|copy-trade|smart-money)/i;
 
   let enabled = true;
   let masterEnabled = true;
   let observer = null;
+  let bootstrapObserver = null;
+  let bootstrapScheduled = false;
   let flushScheduled = false;
   let bodyReadyListener = false;
   let scopeTimer = null;
@@ -45,6 +59,39 @@
 
   function isGMGNPage() {
     return /(^|\.)gmgn\.ai$/i.test(location.hostname || '');
+  }
+
+  function mayContainWalletMonitor(node) {
+    const element = node?.nodeType === 1 ? node : node?.parentElement;
+    if (!element) return false;
+    const hints = hintText(element);
+    if (/wallet|follow|monitor|tracker/i.test(hints)) return true;
+    try {
+      if (element.querySelector?.(WALLET_BOOTSTRAP_SELECTOR)) return true;
+    } catch (error) {}
+    if (element.childElementCount > 80) return false;
+    const text = cleanText(element.textContent).slice(0, 500);
+    return /钱包|wallet/i.test(text) && /追踪|购买|买入|卖出|follow|buy|sell/i.test(text);
+  }
+
+  function watchForWalletMonitor() {
+    if (bootstrapObserver || observer || !document.body || !enabled || !masterEnabled) return;
+    bootstrapObserver = new MutationObserver((mutations) => {
+      if (bootstrapScheduled) return;
+      const likely = mutations.some((mutation) => Array.from(mutation.addedNodes || []).some(mayContainWalletMonitor));
+      if (!likely) return;
+      bootstrapScheduled = true;
+      queueMicrotask(() => {
+        bootstrapScheduled = false;
+        if (!bootstrapObserver || observer || !enabled || !masterEnabled) return;
+        refreshWalletScope();
+        if (!walletMonitorActive) return;
+        bootstrapObserver.disconnect();
+        bootstrapObserver = null;
+        start();
+      });
+    });
+    bootstrapObserver.observe(document.body, { childList: true, subtree: true });
   }
 
   function normalizeCA(value, allowUnknown = false) {
@@ -193,7 +240,7 @@
     const links = [];
     if (root?.matches?.('a[href]') && TOKEN_ROUTE_RE.test(root.getAttribute('href') || '')) return [root];
     try {
-      for (const link of root?.querySelectorAll?.('a[href]') || []) {
+      for (const link of root?.querySelectorAll?.(TOKEN_LINK_SELECTOR) || []) {
         if (TOKEN_ROUTE_RE.test(link.getAttribute('href') || '')) links.push(link);
         if (links.length > 2) break;
       }
@@ -239,7 +286,7 @@
       try {
         const link = node.matches?.('a[href]') && TOKEN_ROUTE_RE.test(node.getAttribute('href') || '')
           ? node
-          : Array.from(node.querySelectorAll('a[href]')).find((candidate) => TOKEN_ROUTE_RE.test(candidate.getAttribute('href') || ''));
+          : node.querySelector(TOKEN_LINK_SELECTOR);
         if (link && candidateParts(link.getAttribute('href')).length) return true;
         const addressNode = node.querySelector('[data-address],[data-ca],[data-mint],[data-token-address],[data-contract-address]');
         if (addressNode && TOKEN_ATTRS
@@ -334,40 +381,19 @@
   }
 
   function seedExistingMessages() {
+    const scope = walletScope || (MONITOR_PATH_RE.test(location.pathname) ? observationRoot : null);
+    if (!scope) return;
     try {
-      for (const node of document.querySelectorAll(POPUP_SELECTOR)) {
-        const root = findMessageRoot(node);
-        const ca = root && extractCA(root);
-        if (root && ca) seenMessages.set(root, ca);
-      }
-    } catch (error) {}
-    if (!walletScope) return;
-    try {
-      for (const link of walletScope.querySelectorAll('a[href]')) {
-        if (!TOKEN_ROUTE_RE.test(link.getAttribute('href') || '')
-            || !candidateParts(link.getAttribute('href')).length) continue;
-        const root = findMessageRoot(link) || link;
-        const ca = extractCA(root);
-        if (ca) seenMessages.set(root, ca);
+      for (const link of scope.querySelectorAll(TOKEN_LINK_SELECTOR)) {
+        const ca = extractCA(link);
+        if (ca) seenMessages.set(link, ca);
       }
     } catch (error) {}
   }
 
   function start() {
     if (observer || !enabled || !masterEnabled || !document.documentElement || !isGMGNPage()) return;
-    refreshWalletScope();
-    if (!walletMonitorActive) {
-      if (scopeTimer === null) {
-        scopeTimer = setInterval(() => {
-          if (!enabled || !masterEnabled || observer) return;
-          refreshWalletScope();
-          if (walletMonitorActive) start();
-        }, 3000);
-      }
-      return;
-    }
-    observationRoot = walletScope || document.body;
-    if (!observationRoot) {
+    if (!document.body) {
       if (!bodyReadyListener) {
         bodyReadyListener = true;
         document.addEventListener('DOMContentLoaded', () => {
@@ -377,6 +403,21 @@
       }
       return;
     }
+    refreshWalletScope();
+    if (!walletMonitorActive) {
+      watchForWalletMonitor();
+      if (scopeTimer === null) {
+        scopeTimer = setInterval(() => {
+          if (!enabled || !masterEnabled || observer) return;
+          refreshWalletScope();
+          if (walletMonitorActive) start();
+        }, 3000);
+      }
+      return;
+    }
+    bootstrapObserver?.disconnect();
+    bootstrapObserver = null;
+    observationRoot = walletScope || document.body;
     seedExistingMessages();
     observer = new MutationObserver((mutations) => {
       for (const mutation of mutations) {
@@ -399,7 +440,7 @@
         refreshWalletScope();
         const next = walletMonitorActive ? (walletScope || (MONITOR_PATH_RE.test(location.pathname) ? document.body : null)) : null;
         if (next && next !== previous) {
-          observer.disconnect();
+          observer?.disconnect();
           observer = null;
           observationRoot = next;
           start();
@@ -408,6 +449,7 @@
           observer = null;
           observationRoot = null;
           pendingNodes.clear();
+          watchForWalletMonitor();
         }
       }, 3000);
     }
@@ -416,6 +458,9 @@
   function stop() {
     observer?.disconnect();
     observer = null;
+    bootstrapObserver?.disconnect();
+    bootstrapObserver = null;
+    bootstrapScheduled = false;
     flushScheduled = false;
     pendingNodes.clear();
     if (scopeTimer !== null) {
