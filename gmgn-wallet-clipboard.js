@@ -8,7 +8,6 @@
   const RESULT_EVENT = 'dsm-gmgn-wallet-ca-copied';
   const CA_RE = /^(?:0x[a-fA-F0-9]{40,128}|[1-9A-HJ-NP-Za-km-z]{32,44}|[13][1-9A-HJ-NP-Za-km-z]{25,34}|[EU]Q[A-Za-z0-9_-]{46})$/;
   const GENERIC_ADDRESS_RE = /^(?=.*\d)[A-Za-z0-9_-]{24,128}$/;
-  const CA_MATCH_RE = /0x[a-fA-F0-9]{40,128}|[1-9A-HJ-NP-Za-km-z]{32,44}|[13][1-9A-HJ-NP-Za-km-z]{25,34}|[EU]Q[A-Za-z0-9_-]{46}/g;
   const TOKEN_ROUTE_RE = /\/(?:token|pump|meme|coin|pair|pool)(?:\/|$)|[?&#](?:token|mint|contract|ca)=/i;
   const TOKEN_LINK_SELECTOR = [
     'a[href*="/token/" i]', 'a[href*="/pump/" i]', 'a[href*="/meme/" i]',
@@ -17,24 +16,12 @@
     'a[href*="&mint=" i]', 'a[href*="?contract=" i]', 'a[href*="&contract=" i]',
     'a[href*="?ca=" i]', 'a[href*="&ca=" i]'
   ].join(',');
-  const WALLET_ROUTE_RE = /\/(?:address|wallet|user|account|profile|trader|follow|watchlist)(?:\/|$)/i;
   const TOKEN_ATTRS = ['data-ca', 'data-mint', 'data-token-address', 'data-contract-address'];
-  const WALLET_MARKER_RE = /官方\s*钱包|钱包监控|钱包动态|钱包提醒|wallet(?:[-_\s]*(?:monitor|activity|alert|watch|notification|message|event))?|smart[-_\s]*money|copy[-_\s]*trade|跟单|交易提醒|新交易|买入|卖出|swap|bought|sold|received|sent/i;
-  const WALLET_HINT_RE = /官方|wallet[-_\s]*(?:monitor|activity|alert|watch|notification|message|event)|smart[-_\s]*money|copy[-_\s]*trade|钱包|跟单|交易提醒/i;
-  const POPUP_MARKER_RE = /toast|notification|notify|alert|popup|snackbar|live[-_]?region/i;
-  const POPUP_SELECTOR = [
-    '[role="alert"]', '[aria-live="polite"]', '[aria-live="assertive"]',
-    '[data-testid*="toast" i]', '[data-testid*="notification" i]',
-    '[data-testid*="wallet" i]', '[data-sentry-component*="Notification" i]',
-    '[class*="toast" i]', '[class*="notification" i]', '[class*="notify" i]',
-    '[class*="popup" i]', '[class*="wallet" i]', '[class*="message" i]'
-  ].join(',');
   const WALLET_BOOTSTRAP_SELECTOR = [
     '[data-testid*="wallet" i]', '[data-testid*="follow" i]',
     '[class*="wallet" i]', '[class*="follow" i]',
     '[aria-label*="wallet" i]', '[aria-label*="钱包" i]'
   ].join(',');
-  const MONITOR_PATH_RE = /(?:wallet|monitor|follow|watch|tracker|copy-trade|smart-money)/i;
 
   let enabled = true;
   let masterEnabled = true;
@@ -109,43 +96,38 @@
 
   function refreshWalletScope() {
     if (!document.body) return null;
-    const pathSuggestsMonitor = MONITOR_PATH_RE.test(location.pathname);
-    if (!pathSuggestsMonitor && walletScope?.isConnected) {
+    if (walletScope?.isConnected) {
       walletMonitorActive = true;
       return walletScope;
     }
     const tabs = Array.from(document.querySelectorAll(
       'button,[role="tab"],[role="button"],[data-testid*="wallet" i],[data-testid*="follow" i],[class*="wallet" i],[class*="follow" i]'
     ));
-    const walletTab = tabs.find((element) => /钱包|wallet/i.test(cleanText(element.textContent)));
-    const tabContext = cleanText(walletTab?.parentElement?.textContent).slice(0, 2600);
-    const tabSuggestsMonitor = /追踪|购买|买入|卖出|MC\s*[:：$]|follow|buy|sell|market\s*cap/i.test(tabContext);
-    walletMonitorActive = pathSuggestsMonitor || tabSuggestsMonitor;
-    if (!walletMonitorActive) {
-      walletScope = null;
-      return null;
-    }
-    if (!walletTab) {
-      if (pathSuggestsMonitor) {
-        walletScope = null;
-        return null;
-      }
-      walletMonitorActive = false;
-      walletScope = null;
-      return null;
-    }
-
-    let current = walletTab;
-    for (let depth = 0; current && current !== document.body && depth < 7; depth += 1, current = current.parentElement) {
-      const text = cleanText(current.textContent).slice(0, 2600);
-      if (!/追踪|购买|买入|卖出|MC\s*[:：$]/i.test(text)) continue;
-      let linkCount = 0;
-      try { linkCount = current.querySelectorAll('a[href]').length; } catch (error) {}
-      if (linkCount > 0) {
-        walletScope = current;
+    const walletTabs = tabs.filter((element) => {
+      const text = cleanText(element.textContent);
+      return text.length <= 80 && (/^钱包(?:\s|\d|$)/.test(text) || /^wallet(?:\s|\d|$)/i.test(text));
+    });
+    let best = null;
+    let bestLinkCount = Infinity;
+    for (const walletTab of walletTabs) {
+      let current = walletTab;
+      for (let depth = 0; current && current !== document.body && depth < 7; depth += 1, current = current.parentElement) {
+        const text = cleanText(current.textContent).slice(0, 3200);
+        if (!/追踪|跟踪|购买|买入|卖出|tracking|follow|buy|sell/i.test(text)) continue;
+        let tokenCount = 0;
+        let linkCount = 0;
+        try {
+          tokenCount = current.querySelectorAll(TOKEN_LINK_SELECTOR).length;
+          linkCount = current.querySelectorAll('a[href]').length;
+        } catch (error) {}
+        if (!tokenCount || !linkCount || linkCount >= bestLinkCount) continue;
+        best = current;
+        bestLinkCount = linkCount;
         break;
       }
     }
+    walletScope = best;
+    walletMonitorActive = !!walletScope;
     return walletScope;
   }
 
@@ -195,18 +177,7 @@
       if (candidates.length) return candidates[0];
     }
 
-    // 文本兜底只接受严格 CA，并排除钱包链接中的地址；如果剩余多个候选则放弃，
-    // 宁可不复制，也不能把钱包地址误当成代币 CA。
-    const text = String(root.textContent || '');
-    const blocked = new Set();
-    for (const link of links) {
-      if (!WALLET_ROUTE_RE.test(link.getAttribute('href') || '')) continue;
-      for (const candidate of candidateParts(link.getAttribute('href'))) blocked.add(candidate);
-    }
-    const exactTextCandidates = [...new Set((text.match(CA_MATCH_RE) || [])
-      .map((match) => normalizeCA(match)).filter(Boolean))]
-      .filter((candidate) => !blocked.has(candidate));
-    return exactTextCandidates.length === 1 ? exactTextCandidates[0] : '';
+    return '';
   }
 
   function hintText(element) {
@@ -218,22 +189,7 @@
   }
 
   function isMonitorContext(element) {
-    if (walletMonitorActive && isInsideWalletScope(element)) return true;
-    if (MONITOR_PATH_RE.test(location.pathname)) return true;
-    const text = `${hintText(element)} ${cleanText(element?.textContent).slice(0, 1200)}`;
-    return WALLET_MARKER_RE.test(text);
-  }
-
-  function popupScore(element) {
-    const hints = hintText(element);
-    let score = 0;
-    if (POPUP_MARKER_RE.test(hints)) score += 3;
-    if (WALLET_HINT_RE.test(hints)) score += 4;
-    if (element.getAttribute?.('role') === 'alert' || element.hasAttribute?.('aria-live')) score += 4;
-    try {
-      if (getComputedStyle(element).position === 'fixed') score += 2;
-    } catch (error) {}
-    return score;
+    return walletMonitorActive && isInsideWalletScope(element);
   }
 
   function tokenLinksIn(root) {
@@ -249,17 +205,13 @@
   }
 
   function findMessageRoot(node) {
+    if (!walletScope?.isConnected) return null;
     let current = node?.nodeType === 1 ? node : node?.parentElement;
     for (let depth = 0; current && current !== document.body && depth < 8; depth += 1, current = current.parentElement) {
       const tokenLinks = tokenLinksIn(current);
       // 返回代币链接本身，避免把整个钱包面板当成一条消息。
-      if (tokenLinks.length === 1) return tokenLinks[0];
+      if (tokenLinks.length === 1 && isInsideWalletScope(tokenLinks[0])) return tokenLinks[0];
       if (current === walletScope) break;
-    }
-    // Toast/通知可能不在钱包面板内，保留一个轻量的上下文兜底。
-    current = node?.nodeType === 1 ? node : node?.parentElement;
-    for (let depth = 0; current && current !== document.body && depth < 6; depth += 1, current = current.parentElement) {
-      if (tokenLinksIn(current).length && (popupScore(current) >= 3 || isMonitorContext(current))) return current;
     }
     return null;
   }
@@ -270,9 +222,7 @@
 
   function isPotentialNode(node) {
     if (!node || node.nodeType !== 1 || isOwnNode(node)) return false;
-    const hints = hintText(node);
-    if (POPUP_MARKER_RE.test(hints) || (!walletScope && WALLET_HINT_RE.test(hints))
-        || node.getAttribute?.('role') === 'alert' || node.hasAttribute?.('aria-live')) return true;
+    if (!isInsideWalletScope(node)) return false;
     if (node.matches?.('a[href]') && TOKEN_ROUTE_RE.test(node.getAttribute('href') || '')
         && candidateParts(node.getAttribute('href')).length) return true;
     for (const attr of TOKEN_ATTRS) {
@@ -293,11 +243,7 @@
           .some((attr) => normalizeCA(addressNode.getAttribute(attr), true))) return true;
       } catch (error) {}
     }
-    const text = String(node.textContent || '');
-    CA_MATCH_RE.lastIndex = 0;
-    const hasTypedCA = CA_MATCH_RE.test(text);
-    CA_MATCH_RE.lastIndex = 0;
-    return text.length <= 1200 && hasTypedCA;
+    return false;
   }
 
   function enqueueNode(node) {
@@ -305,13 +251,6 @@
     if (!element || isOwnNode(element)) return;
     if (isPotentialNode(element)) {
       pendingNodes.add(element);
-    } else if (element.childElementCount && element.childElementCount <= 80) {
-      // A notification can be inserted inside a small wrapper in one mutation.
-      // Probe only the first marked descendant; never enumerate the whole page.
-      try {
-        const nested = element.querySelector(POPUP_SELECTOR);
-        if (nested) pendingNodes.add(nested);
-      } catch (error) {}
     }
     if (!pendingNodes.size || flushScheduled) return;
     flushScheduled = true;
@@ -381,7 +320,7 @@
   }
 
   function seedExistingMessages() {
-    const scope = walletScope || (MONITOR_PATH_RE.test(location.pathname) ? observationRoot : null);
+    const scope = walletScope;
     if (!scope) return;
     try {
       for (const link of scope.querySelectorAll(TOKEN_LINK_SELECTOR)) {
@@ -404,7 +343,7 @@
       return;
     }
     refreshWalletScope();
-    if (!walletMonitorActive) {
+    if (!walletMonitorActive || !walletScope) {
       watchForWalletMonitor();
       if (scopeTimer === null) {
         scopeTimer = setInterval(() => {
@@ -417,7 +356,7 @@
     }
     bootstrapObserver?.disconnect();
     bootstrapObserver = null;
-    observationRoot = walletScope || document.body;
+    observationRoot = walletScope;
     seedExistingMessages();
     observer = new MutationObserver((mutations) => {
       for (const mutation of mutations) {
@@ -438,7 +377,7 @@
         if (!enabled || !masterEnabled) return;
         const previous = observationRoot;
         refreshWalletScope();
-        const next = walletMonitorActive ? (walletScope || (MONITOR_PATH_RE.test(location.pathname) ? document.body : null)) : null;
+        const next = walletMonitorActive && walletScope?.isConnected ? walletScope : null;
         if (next && next !== previous) {
           observer?.disconnect();
           observer = null;
