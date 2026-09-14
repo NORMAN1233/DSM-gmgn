@@ -9,7 +9,7 @@
   const CA_RE = /^(?:0x[a-fA-F0-9]{40,128}|[1-9A-HJ-NP-Za-km-z]{32,44}|[13][1-9A-HJ-NP-Za-km-z]{25,34}|[EU]Q[A-Za-z0-9_-]{46})$/;
   const GENERIC_ADDRESS_RE = /^(?=.*\d)[A-Za-z0-9_-]{24,128}$/;
   const CA_MATCH_RE = /0x[a-fA-F0-9]{40,128}|[1-9A-HJ-NP-Za-km-z]{32,44}|[13][1-9A-HJ-NP-Za-km-z]{25,34}|[EU]Q[A-Za-z0-9_-]{46}/g;
-  const TOKEN_ROUTE_RE = /\/(?:token|pump|meme|coin|pair|pool)(?:\/|$)/i;
+  const TOKEN_ROUTE_RE = /\/(?:token|pump|meme|coin|pair|pool)(?:\/|$)|[?&#](?:token|mint|contract|ca)=/i;
   const WALLET_ROUTE_RE = /\/(?:address|wallet|user|account|profile|trader|follow|watchlist)(?:\/|$)/i;
   const TOKEN_ATTRS = ['data-ca', 'data-mint', 'data-token-address', 'data-contract-address'];
   const WALLET_MARKER_RE = /官方\s*钱包|钱包监控|钱包动态|钱包提醒|wallet(?:[-_\s]*(?:monitor|activity|alert|watch|notification|message|event))?|smart[-_\s]*money|copy[-_\s]*trade|跟单|交易提醒|新交易|买入|卖出|swap|bought|sold|received|sent/i;
@@ -33,12 +33,17 @@
   let walletMonitorActive = false;
   let walletScope = null;
   let observationRoot = null;
-  const seenMessages = new WeakSet();
+  // 以“行节点 -> 最近一次 CA”去重；GMGN 会复用同一行节点更新下一笔交易。
+  const seenMessages = new WeakMap();
   const recentCopies = new Map();
   const pendingNodes = new Set();
 
   function cleanText(value) {
     return String(value || '').replace(/[\u200b-\u200d\ufeff]/g, '').replace(/\s+/g, ' ').trim();
+  }
+
+  function isGMGNPage() {
+    return /(^|\.)gmgn\.ai$/i.test(location.hostname || '');
   }
 
   function normalizeCA(value, allowUnknown = false) {
@@ -56,21 +61,31 @@
 
   function refreshWalletScope() {
     if (!document.body) return null;
-    if (!MONITOR_PATH_RE.test(location.pathname)) {
-      const pageText = cleanText(document.body.textContent).slice(0, 3200);
-      if (/钱包|wallet/i.test(pageText) && /追踪|购买|买入|卖出|MC\s*[:：$]|follow|buy|sell|market\s*cap/i.test(pageText)) {
-        walletMonitorActive = true;
-      }
-    } else {
+    const pathSuggestsMonitor = MONITOR_PATH_RE.test(location.pathname);
+    if (!pathSuggestsMonitor && walletScope?.isConnected) {
       walletMonitorActive = true;
+      return walletScope;
     }
-    if (!walletMonitorActive) return null;
-
     const tabs = Array.from(document.querySelectorAll(
-      'button,[role="tab"],[role="button"],[data-testid*="wallet" i],[class*="wallet" i]'
+      'button,[role="tab"],[role="button"],[data-testid*="wallet" i],[data-testid*="follow" i],[class*="wallet" i],[class*="follow" i]'
     ));
     const walletTab = tabs.find((element) => /钱包|wallet/i.test(cleanText(element.textContent)));
-    if (!walletTab) return walletScope;
+    const tabContext = cleanText(walletTab?.parentElement?.textContent).slice(0, 2600);
+    const tabSuggestsMonitor = /追踪|购买|买入|卖出|MC\s*[:：$]|follow|buy|sell|market\s*cap/i.test(tabContext);
+    walletMonitorActive = pathSuggestsMonitor || tabSuggestsMonitor;
+    if (!walletMonitorActive) {
+      walletScope = null;
+      return null;
+    }
+    if (!walletTab) {
+      if (pathSuggestsMonitor) {
+        walletScope = null;
+        return null;
+      }
+      walletMonitorActive = false;
+      walletScope = null;
+      return null;
+    }
 
     let current = walletTab;
     for (let depth = 0; current && current !== document.body && depth < 7; depth += 1, current = current.parentElement) {
@@ -142,18 +157,6 @@
     return exactTextCandidates.length === 1 ? exactTextCandidates[0] : '';
   }
 
-  function visible(element) {
-    if (!element?.isConnected) return false;
-    try {
-      const rect = element.getBoundingClientRect();
-      const style = getComputedStyle(element);
-      return rect.width > 0 && rect.height > 0 && style.display !== 'none'
-        && style.visibility !== 'hidden' && Number(style.opacity || 1) !== 0;
-    } catch (error) {
-      return true;
-    }
-  }
-
   function hintText(element) {
     return [
       element?.id, element?.className, element?.getAttribute?.('role'),
@@ -181,20 +184,32 @@
     return score;
   }
 
+  function tokenLinksIn(root) {
+    const links = [];
+    if (root?.matches?.('a[href]') && TOKEN_ROUTE_RE.test(root.getAttribute('href') || '')) links.push(root);
+    try {
+      for (const link of root?.querySelectorAll?.('a[href]') || []) {
+        if (TOKEN_ROUTE_RE.test(link.getAttribute('href') || '')) links.push(link);
+        if (links.length > 2) break;
+      }
+    } catch (error) {}
+    return links;
+  }
+
   function findMessageRoot(node) {
     let current = node?.nodeType === 1 ? node : node?.parentElement;
-    let best = null;
-    let bestScore = 0;
-    for (let depth = 0; current && current !== document.body && depth < 9; depth += 1, current = current.parentElement) {
-      if (!visible(current)) continue;
-      const score = popupScore(current) + (isMonitorContext(current) ? 3 : 0);
-      if (score > bestScore) {
-        best = current;
-        bestScore = score;
-      }
-      if (bestScore >= 7) break;
+    for (let depth = 0; current && current !== document.body && depth < 8; depth += 1, current = current.parentElement) {
+      const tokenLinks = tokenLinksIn(current);
+      // 返回代币链接本身，避免把整个钱包面板当成一条消息。
+      if (tokenLinks.length === 1) return tokenLinks[0];
+      if (current === walletScope) break;
     }
-    return bestScore >= 3 ? best : null;
+    // Toast/通知可能不在钱包面板内，保留一个轻量的上下文兜底。
+    current = node?.nodeType === 1 ? node : node?.parentElement;
+    for (let depth = 0; current && current !== document.body && depth < 6; depth += 1, current = current.parentElement) {
+      if (tokenLinksIn(current).length && (popupScore(current) >= 3 || isMonitorContext(current))) return current;
+    }
+    return null;
   }
 
   function isOwnNode(node) {
@@ -204,18 +219,25 @@
   function isPotentialNode(node) {
     if (!node || node.nodeType !== 1 || isOwnNode(node)) return false;
     const hints = hintText(node);
-    if (POPUP_MARKER_RE.test(hints) || WALLET_HINT_RE.test(hints)
+    if (POPUP_MARKER_RE.test(hints) || (!walletScope && WALLET_HINT_RE.test(hints))
         || node.getAttribute?.('role') === 'alert' || node.hasAttribute?.('aria-live')) return true;
-    if (node.matches?.('a[href]') && candidateParts(node.getAttribute('href')).length) return true;
-    for (const attr of ['data-address', 'data-ca', 'data-mint', 'data-token-address', 'data-contract-address']) {
+    if (node.matches?.('a[href]') && TOKEN_ROUTE_RE.test(node.getAttribute('href') || '')
+        && candidateParts(node.getAttribute('href')).length) return true;
+    for (const attr of TOKEN_ATTRS) {
       if (normalizeCA(node.getAttribute?.(attr), true)) return true;
+    }
+    if (normalizeCA(node.getAttribute?.('data-address'), true)) {
+      const ownerLink = node.closest?.('a[href]');
+      if (ownerLink && TOKEN_ROUTE_RE.test(ownerLink.getAttribute('href') || '')) return true;
     }
     if (walletMonitorActive && (isInsideWalletScope(node) || !walletScope) && node.childElementCount <= 32) {
       try {
-        const link = node.matches?.('a[href]') ? node : node.querySelector('a[href]');
+        const link = node.matches?.('a[href]') && TOKEN_ROUTE_RE.test(node.getAttribute('href') || '')
+          ? node
+          : Array.from(node.querySelectorAll('a[href]')).find((candidate) => TOKEN_ROUTE_RE.test(candidate.getAttribute('href') || ''));
         if (link && candidateParts(link.getAttribute('href')).length) return true;
         const addressNode = node.querySelector('[data-address],[data-ca],[data-mint],[data-token-address],[data-contract-address]');
-        if (addressNode && ['data-address', 'data-ca', 'data-mint', 'data-token-address', 'data-contract-address']
+        if (addressNode && TOKEN_ATTRS
           .some((attr) => normalizeCA(addressNode.getAttribute(attr), true))) return true;
       } catch (error) {}
     }
@@ -223,7 +245,7 @@
     CA_MATCH_RE.lastIndex = 0;
     const hasTypedCA = CA_MATCH_RE.test(text);
     CA_MATCH_RE.lastIndex = 0;
-    return text.length <= 1200 && (hasTypedCA || candidateParts(text).length);
+    return text.length <= 1200 && hasTypedCA;
   }
 
   function enqueueNode(node) {
@@ -259,7 +281,9 @@
         const write = navigator.clipboard.writeText(value).then(() => true).catch(() => false);
         const finished = await Promise.race([
           write,
-          new Promise((resolve) => setTimeout(() => resolve(false), 350))
+          // Clipboard API 在 GMGN 页面通常会立即完成；失败时尽快切到同步兜底，
+          // 避免自动复制被无响应的权限请求拖慢。
+          new Promise((resolve) => setTimeout(() => resolve(false), 180))
         ]);
         if (finished) return true;
       }
@@ -279,10 +303,11 @@
   }
 
   async function processMessage(root) {
-    if (!enabled || !masterEnabled || !root || seenMessages.has(root)) return;
+    if (!enabled || !masterEnabled || !root) return;
     const ca = extractCA(root);
     if (!ca || !isMonitorContext(root)) return;
-    seenMessages.add(root);
+    if (seenMessages.get(root) === ca) return;
+    seenMessages.set(root, ca);
     const previous = recentCopies.get(ca) || 0;
     if (Date.now() - previous < 1500) return;
     recentCopies.set(ca, Date.now());
@@ -297,22 +322,35 @@
     try {
       for (const node of document.querySelectorAll(POPUP_SELECTOR)) {
         const root = findMessageRoot(node);
-        if (root && extractCA(root)) seenMessages.add(root);
+        const ca = root && extractCA(root);
+        if (root && ca) seenMessages.set(root, ca);
       }
     } catch (error) {}
     if (!walletScope) return;
     try {
       for (const link of walletScope.querySelectorAll('a[href]')) {
-        if (!candidateParts(link.getAttribute('href')).length) continue;
+        if (!TOKEN_ROUTE_RE.test(link.getAttribute('href') || '')
+            || !candidateParts(link.getAttribute('href')).length) continue;
         const root = findMessageRoot(link) || link;
-        seenMessages.add(root);
+        const ca = extractCA(root);
+        if (ca) seenMessages.set(root, ca);
       }
     } catch (error) {}
   }
 
   function start() {
-    if (observer || !enabled || !masterEnabled || !document.documentElement) return;
+    if (observer || !enabled || !masterEnabled || !document.documentElement || !isGMGNPage()) return;
     refreshWalletScope();
+    if (!walletMonitorActive) {
+      if (scopeTimer === null) {
+        scopeTimer = setInterval(() => {
+          if (!enabled || !masterEnabled || observer) return;
+          refreshWalletScope();
+          if (walletMonitorActive) start();
+        }, 3000);
+      }
+      return;
+    }
     observationRoot = walletScope || document.body;
     if (!observationRoot) {
       if (!bodyReadyListener) {
@@ -330,20 +368,31 @@
         for (const node of mutation.addedNodes || []) {
           enqueueNode(node);
         }
+        if (mutation.type === 'attributes') enqueueNode(mutation.target);
       }
     });
-    observer.observe(observationRoot, { childList: true, subtree: true });
-    if (scopeTimer === null && walletMonitorActive) {
+    observer.observe(observationRoot, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['href', 'data-ca', 'data-mint', 'data-token-address', 'data-contract-address', 'data-address']
+    });
+    if (scopeTimer === null) {
       scopeTimer = setInterval(() => {
-        if (!observer || !enabled || !masterEnabled) return;
+        if (!enabled || !masterEnabled) return;
         const previous = observationRoot;
         refreshWalletScope();
-        const next = walletScope || document.body;
+        const next = walletMonitorActive ? (walletScope || (MONITOR_PATH_RE.test(location.pathname) ? document.body : null)) : null;
         if (next && next !== previous) {
           observer.disconnect();
+          observer = null;
           observationRoot = next;
-          observer.observe(observationRoot, { childList: true, subtree: true });
-          seedExistingMessages();
+          start();
+        } else if (!next && observer) {
+          observer.disconnect();
+          observer = null;
+          observationRoot = null;
+          pendingNodes.clear();
         }
       }, 3000);
     }
