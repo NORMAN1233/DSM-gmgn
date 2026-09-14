@@ -1,14 +1,17 @@
 (() => {
   'use strict';
 
-  // GMGN 官方钱包通知会在页面上以 toast / notification 节点动态出现。
-  // 这个脚本只处理新出现的通知，不扫描历史列表，避免刷新页面时覆盖用户剪贴板。
+  // 监听 GMGN 官方钱包/追踪面板中新出现的购买信息，只处理新行，
+  // 不扫描历史列表，避免刷新页面时覆盖用户剪贴板。
   const SETTING_KEY = 'dsmSetting_officialWalletCopyEnabled';
   const MASTER_KEY = 'dsmSetting_dsmEnabled';
   const RESULT_EVENT = 'dsm-gmgn-wallet-ca-copied';
   const CA_RE = /^(?:0x[a-fA-F0-9]{40,128}|[1-9A-HJ-NP-Za-km-z]{32,44}|[13][1-9A-HJ-NP-Za-km-z]{25,34}|[EU]Q[A-Za-z0-9_-]{46})$/;
   const GENERIC_ADDRESS_RE = /^(?=.*\d)[A-Za-z0-9_-]{24,128}$/;
   const CA_MATCH_RE = /0x[a-fA-F0-9]{40,128}|[1-9A-HJ-NP-Za-km-z]{32,44}|[13][1-9A-HJ-NP-Za-km-z]{25,34}|[EU]Q[A-Za-z0-9_-]{46}/g;
+  const TOKEN_ROUTE_RE = /\/(?:token|pump|meme|coin|pair|pool)(?:\/|$)/i;
+  const WALLET_ROUTE_RE = /\/(?:address|wallet|user|account|profile|trader|follow|watchlist)(?:\/|$)/i;
+  const TOKEN_ATTRS = ['data-ca', 'data-mint', 'data-token-address', 'data-contract-address'];
   const WALLET_MARKER_RE = /官方\s*钱包|钱包监控|钱包动态|钱包提醒|wallet(?:[-_\s]*(?:monitor|activity|alert|watch|notification|message|event))?|smart[-_\s]*money|copy[-_\s]*trade|跟单|交易提醒|新交易|买入|卖出|swap|bought|sold|received|sent/i;
   const WALLET_HINT_RE = /官方|wallet[-_\s]*(?:monitor|activity|alert|watch|notification|message|event)|smart[-_\s]*money|copy[-_\s]*trade|钱包|跟单|交易提醒/i;
   const POPUP_MARKER_RE = /toast|notification|notify|alert|popup|snackbar|live[-_]?region/i;
@@ -24,7 +27,6 @@
   let enabled = true;
   let masterEnabled = true;
   let observer = null;
-  let toastTimer = null;
   let flushTimer = null;
   let bodyReadyListener = false;
   let scopeTimer = null;
@@ -93,31 +95,51 @@
     const nodes = [];
     if (root.nodeType === 1) nodes.push(root);
     try { nodes.push(...root.querySelectorAll('[data-address],[data-ca],[data-mint],[data-token-address],[data-contract-address]')); } catch (error) {}
+
+    // GMGN 每条购买信息通常同时包含“钱包地址链接”和“代币链接”。
+    // data-address 优先指向钱包，只有明确位于代币节点/代币链接下时才允许使用。
     for (const node of nodes) {
-      for (const attr of ['data-address', 'data-ca', 'data-mint', 'data-token-address', 'data-contract-address']) {
+      for (const attr of TOKEN_ATTRS) {
         const direct = normalizeCA(node.getAttribute?.(attr), true);
         if (direct) return direct;
+      }
+      const walletAddress = normalizeCA(node.getAttribute?.('data-address'), true);
+      if (walletAddress) {
+        const ownerLink = node.closest?.('a[href]');
+        const nodeHints = `${hintText(node)} ${hintText(node.parentElement)}`;
+        if (ownerLink && TOKEN_ROUTE_RE.test(ownerLink.getAttribute('href') || '')) return walletAddress;
+        if (/token|mint|contract|coin|pair|pool/i.test(nodeHints)) return walletAddress;
       }
     }
 
     const links = [];
     if (root.matches?.('a[href]')) links.push(root);
     try { links.push(...root.querySelectorAll('a[href]')); } catch (error) {}
-    for (const link of links) {
+    const tokenLinks = links
+      .filter((link) => TOKEN_ROUTE_RE.test(link.getAttribute('href') || ''))
+      .sort((left, right) => {
+        const leftHints = hintText(left);
+        const rightHints = hintText(right);
+        return Number(/token|mint|contract|coin|pair|pool/i.test(rightHints))
+          - Number(/token|mint|contract|coin|pair|pool/i.test(leftHints));
+      });
+    for (const link of tokenLinks) {
       const candidates = candidateParts(link.getAttribute('href'));
       if (candidates.length) return candidates[0];
     }
 
-    // 文本兜底：只在已经确认是通知/钱包消息的容器中使用，降低误识别普通长文本的风险。
+    // 文本兜底只接受严格 CA，并排除钱包链接中的地址；如果剩余多个候选则放弃，
+    // 宁可不复制，也不能把钱包地址误当成代币 CA。
     const text = String(root.textContent || '');
-    const exactTextCandidates = candidateParts(text);
-    if (exactTextCandidates.length) return exactTextCandidates[0];
-    const matches = text.match(CA_MATCH_RE) || [];
-    for (const match of matches) {
-      const ca = normalizeCA(match);
-      if (ca) return ca;
+    const blocked = new Set();
+    for (const link of links) {
+      if (!WALLET_ROUTE_RE.test(link.getAttribute('href') || '')) continue;
+      for (const candidate of candidateParts(link.getAttribute('href'))) blocked.add(candidate);
     }
-    return '';
+    const exactTextCandidates = [...new Set((text.match(CA_MATCH_RE) || [])
+      .map((match) => normalizeCA(match)).filter(Boolean))]
+      .filter((candidate) => !blocked.has(candidate));
+    return exactTextCandidates.length === 1 ? exactTextCandidates[0] : '';
   }
 
   function visible(element) {
@@ -176,8 +198,7 @@
   }
 
   function isOwnNode(node) {
-    return !!node?.closest?.('#dsm-gmgn-wallet-copy-toast,[data-dsm-wallet-copy]')
-      || node?.id === 'dsm-gmgn-wallet-copy-toast';
+    return !!node?.closest?.('[data-dsm-wallet-copy]') || node?.hasAttribute?.('data-dsm-wallet-copy');
   }
 
   function isPotentialNode(node) {
@@ -232,19 +253,6 @@
     }, 0);
   }
 
-  function showCopyToast(ca, ok) {
-    const id = 'dsm-gmgn-wallet-copy-toast';
-    document.getElementById(id)?.remove();
-    const toast = document.createElement('div');
-    toast.id = id;
-    toast.dataset.dsmWalletCopy = '1';
-    toast.textContent = ok ? `官方钱包 CA 已复制：${ca.slice(0, 8)}…${ca.slice(-6)}` : '官方钱包 CA 复制失败';
-    toast.style.cssText = 'position:fixed;z-index:2147483647;right:18px;top:72px;max-width:360px;padding:9px 12px;border:1px solid ' + (ok ? '#79d99a' : '#ff7b86') + ';background:#0c1719ee;color:' + (ok ? '#b9ffd0' : '#ffb5bc') + ';font:12px/1.4 system-ui,sans-serif;pointer-events:none;box-shadow:0 5px 18px #0008;';
-    (document.documentElement || document.body).appendChild(toast);
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => toast.remove(), 2400);
-  }
-
   async function copyToClipboard(value) {
     try {
       if (navigator.clipboard?.writeText) {
@@ -280,7 +288,6 @@
     recentCopies.set(ca, Date.now());
     for (const [key, at] of recentCopies) if (Date.now() - at > 15000) recentCopies.delete(key);
     const copied = await copyToClipboard(ca);
-    showCopyToast(ca, copied);
     try {
       window.dispatchEvent(new CustomEvent(RESULT_EVENT, { detail: { ca, copied } }));
     } catch (error) {}
