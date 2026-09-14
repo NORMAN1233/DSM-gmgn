@@ -20,17 +20,15 @@
   let masterEnabled = true;
   let settingsReady = false;
   let observer = null;
-  let bootstrapObserver = null;
   let observationRoot = null;
-  let lifecycleTimer = null;
   let bodyReadyListener = false;
   let flushScheduled = false;
-  let initialized = false;
+  let copySequence = 0;
+  let copyQueue = Promise.resolve();
 
   const pendingRows = new Set();
   const seenRows = new WeakMap();
-  const copyRetries = new WeakMap();
-  const recentCopies = new Map();
+  const copyingRows = new WeakMap();
 
   function isGMGNPage() {
     return /(^|\.)gmgn\.ai$/i.test(location.hostname || '');
@@ -57,12 +55,9 @@
       : element.closest?.(TRACKER_ROW_SELECTOR);
     if (direct && caFromRow(direct)) return direct;
 
-    let symbol = null;
-    if (element.matches?.(TRACKER_SYMBOL_SELECTOR)) symbol = element;
-    else {
-      try { symbol = element.querySelector?.(TRACKER_SYMBOL_SELECTOR); } catch (error) {}
-    }
-    const fallback = symbol?.closest?.('a[href]');
+    const symbol = element.closest?.(TRACKER_SYMBOL_SELECTOR);
+    const fallback = symbol?.closest?.('a[href]') || element.closest?.('a[href]');
+    if (!symbol && !fallback?.querySelector?.(TRACKER_SYMBOL_SELECTOR)) return null;
     return fallback && caFromRow(fallback) ? fallback : null;
   }
 
@@ -99,17 +94,11 @@
   }
 
   async function copyToClipboard(value) {
-    try {
-      if (navigator.clipboard?.writeText) {
-        const write = navigator.clipboard.writeText(value).then(() => true).catch(() => false);
-        const finished = await Promise.race([
-          write,
-          new Promise((resolve) => setTimeout(() => resolve(false), 180))
-        ]);
-        if (finished) return true;
-      }
-    } catch (error) {}
-
+    // 同步路径先写入，避免等待异步 API 超时；保留用户原来的焦点和选区。
+    const focused = document.activeElement;
+    const selection = window.getSelection();
+    const ranges = [];
+    for (let i = 0; selection && i < selection.rangeCount; i += 1) ranges.push(selection.getRangeAt(i).cloneRange());
     const area = document.createElement('textarea');
     area.value = value;
     area.setAttribute('readonly', '');
@@ -120,37 +109,43 @@
     let copied = false;
     try { copied = document.execCommand('copy'); } catch (error) {}
     area.remove();
-    return copied;
+    focused?.focus?.({ preventScroll: true });
+    if (selection && ranges.length) {
+      selection.removeAllRanges();
+      for (const range of ranges) selection.addRange(range);
+    }
+    if (copied) return true;
+    try {
+      if (!navigator.clipboard?.writeText) return false;
+      await navigator.clipboard.writeText(value);
+      return true;
+    } catch (error) { return false; }
   }
 
   async function processRow(row) {
     if (!settingsReady || !enabled || !masterEnabled || !row?.isConnected) return;
     const ca = caFromRow(row);
     if (!ca) return;
-    if (!isBuyRow(row)) {
-      seenRows.set(row, ca);
-      return;
-    }
+    // 未渲染完整的行不能提前记为已处理，后续 side 文本变更还会再检查。
+    if (!isBuyRow(row)) return;
     if (seenRows.get(row) === ca) return;
-    seenRows.set(row, ca);
-
-    const previous = recentCopies.get(ca) || 0;
-    if (Date.now() - previous < 1500) return;
-    recentCopies.set(ca, Date.now());
-    for (const [key, at] of recentCopies) if (Date.now() - at > 15000) recentCopies.delete(key);
-
-    const copied = await copyToClipboard(ca);
-    if (!copied && !copyRetries.has(row)) {
-      copyRetries.set(row, true);
-      seenRows.delete(row);
-      recentCopies.delete(ca);
-      setTimeout(() => processRow(row).catch(() => {}), 180);
-      return;
-    }
-    copyRetries.delete(row);
-    try {
+    if (copyingRows.get(row) === ca) return;
+    copyingRows.set(row, ca);
+    const sequence = ++copySequence;
+    copyQueue = copyQueue.catch(() => {}).then(async () => {
+      if (!enabled || !masterEnabled || !row.isConnected || caFromRow(row) !== ca || !isBuyRow(row)) return;
+      let copied = await copyToClipboard(ca);
+      // 新消息已到达时，旧消息不再重试，避免覆盖最新 CA。
+      for (let attempt = 0; !copied && attempt < 2 && sequence === copySequence; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 40));
+        if (sequence !== copySequence || !enabled || !masterEnabled || !row.isConnected || caFromRow(row) !== ca) break;
+        copied = await copyToClipboard(ca);
+      }
+      if (copied) seenRows.set(row, ca);
       window.dispatchEvent(new CustomEvent(RESULT_EVENT, { detail: { ca, copied } }));
-    } catch (error) {}
+    }).finally(() => {
+      if (copyingRows.get(row) === ca) copyingRows.delete(row);
+    });
   }
 
   function enqueueRow(row) {
@@ -162,6 +157,8 @@
       flushScheduled = false;
       const rows = Array.from(pendingRows);
       pendingRows.clear();
+      // GMGN 新记录在顶部：一批消息从旧到新写入，最终保留最上面的 CA。
+      rows.sort((a, b) => a === b ? 0 : (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? 1 : -1));
       for (const candidate of rows) processRow(candidate).catch(() => {});
     });
   }
@@ -201,55 +198,43 @@
     } catch (error) {}
   }
 
-  function attachToTracker(row, processTrigger = false) {
-    const root = trackerListRoot(row);
-    if (!root) return false;
+  function attachToTracker(row) {
+    const root = row ? trackerListRoot(row) : null;
     observer?.disconnect();
-    bootstrapObserver?.disconnect();
-    bootstrapObserver = null;
     observationRoot = root;
-    seedExistingRows(root);
+    seedExistingRows(document.body);
     observer = new MutationObserver((mutations) => {
       const addedRows = new Set();
       const changedRows = new Set();
-      let replacedRows = false;
+      let replacedPanel = false;
       for (const mutation of mutations) {
-        if (mutation.type === 'attributes') collectRows(mutation.target, changedRows);
+        if (mutation.type === 'attributes' || mutation.type === 'characterData' || mutation.type === 'childList') {
+          const changed = rowFromNode(mutation.target);
+          if (changed) changedRows.add(changed);
+        }
         for (const node of mutation.addedNodes || []) collectRows(node, addedRows);
         for (const node of mutation.removedNodes || []) {
-          if (firstRowIn(node)) replacedRows = true;
+          if (observationRoot && node.contains?.(observationRoot)) replacedPanel = true;
         }
       }
-      // 切链或重新打开追踪面板时会批量替换历史列表，只做基线记录。
-      if (replacedRows && addedRows.size > 1) markRowsSeen(addedRows);
+      // 只将整个容器替换视为面板重建；正常新增 + 淘汰尾部旧行不可跳过。
+      if (replacedPanel && addedRows.size > 1) markRowsSeen(addedRows);
       else for (const row of addedRows) enqueueRow(row);
       for (const row of changedRows) enqueueRow(row);
+      if (!observationRoot?.isConnected) {
+        const current = Array.from(addedRows).find((candidate) => candidate.isConnected);
+        observationRoot = current ? trackerListRoot(current) : null;
+      }
     });
-    observer.observe(root, {
+    // 连续接收新增节点，不再通过 1 秒轮询恢复监听；只解析官方追踪行。
+    observer.observe(document.body, {
       childList: true,
       subtree: true,
+      characterData: true,
       attributes: true,
       attributeFilter: ['href']
     });
-    if (processTrigger && initialized) {
-      seenRows.delete(row);
-      enqueueRow(row);
-    }
-    initialized = true;
     return true;
-  }
-
-  function watchForTracker() {
-    if (bootstrapObserver || observer || !document.body) return;
-    bootstrapObserver = new MutationObserver((mutations) => {
-      for (const mutation of mutations) {
-        for (const node of mutation.addedNodes || []) {
-          const row = firstRowIn(node);
-          if (row && attachToTracker(row, true)) return;
-        }
-      }
-    });
-    bootstrapObserver.observe(document.body, { childList: true, subtree: true });
   }
 
   function start() {
@@ -266,35 +251,16 @@
     }
 
     const row = firstRowIn(document.body);
-    if (row) attachToTracker(row, false);
-    else watchForTracker();
-
-    if (lifecycleTimer === null) {
-      lifecycleTimer = setInterval(() => {
-        if (!enabled || !masterEnabled) return;
-        if (observer && observationRoot?.isConnected) return;
-        observer?.disconnect();
-        observer = null;
-        observationRoot = null;
-        const current = firstRowIn(document.body);
-        if (current) attachToTracker(current, false);
-        else watchForTracker();
-      }, 1000);
-    }
+    attachToTracker(row);
   }
 
   function stop() {
     observer?.disconnect();
     observer = null;
-    bootstrapObserver?.disconnect();
-    bootstrapObserver = null;
     observationRoot = null;
     pendingRows.clear();
     flushScheduled = false;
-    if (lifecycleTimer !== null) {
-      clearInterval(lifecycleTimer);
-      lifecycleTimer = null;
-    }
+    copySequence += 1;
   }
 
   chrome.storage.local.get([MASTER_KEY, SETTING_KEY]).then((data) => {
