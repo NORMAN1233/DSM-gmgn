@@ -116,9 +116,8 @@
     }
     if (copied) return true;
     try {
-      if (!navigator.clipboard?.writeText) return false;
-      await navigator.clipboard.writeText(value);
-      return true;
+      const result = await chrome.runtime.sendMessage({ type: 'DSM_WALLET_COPY_CA', ca: value });
+      return result?.ok === true;
     } catch (error) { return false; }
   }
 
@@ -177,13 +176,6 @@
     } catch (error) {}
   }
 
-  function markRowsSeen(rows) {
-    for (const row of rows) {
-      const ca = caFromRow(row);
-      if (ca) seenRows.set(row, ca);
-    }
-  }
-
   function seedExistingRows(root) {
     try {
       for (const row of root.querySelectorAll(TRACKER_ROW_SELECTOR)) {
@@ -206,20 +198,15 @@
     observer = new MutationObserver((mutations) => {
       const addedRows = new Set();
       const changedRows = new Set();
-      let replacedPanel = false;
       for (const mutation of mutations) {
         if (mutation.type === 'attributes' || mutation.type === 'characterData' || mutation.type === 'childList') {
           const changed = rowFromNode(mutation.target);
           if (changed) changedRows.add(changed);
         }
         for (const node of mutation.addedNodes || []) collectRows(node, addedRows);
-        for (const node of mutation.removedNodes || []) {
-          if (observationRoot && node.contains?.(observationRoot)) replacedPanel = true;
-        }
       }
-      // 只将整个容器替换视为面板重建；正常新增 + 淘汰尾部旧行不可跳过。
-      if (replacedPanel && addedRows.size > 1) markRowsSeen(addedRows);
-      else for (const row of addedRows) enqueueRow(row);
+      // 重建列表也可能夹带新交易，按从旧到新的顺序处理，不能整批标记已读。
+      for (const row of addedRows) enqueueRow(row);
       for (const row of changedRows) enqueueRow(row);
       if (!observationRoot?.isConnected) {
         const current = Array.from(addedRows).find((candidate) => candidate.isConnected);
@@ -232,7 +219,7 @@
       subtree: true,
       characterData: true,
       attributes: true,
-      attributeFilter: ['href']
+      attributeFilter: ['href', 'class', 'data-testid', 'data-sentry-component', 'data-sentry-source-file']
     });
     return true;
   }

@@ -158,8 +158,8 @@ async function ensureOffscreenDocument() {
   if (creatingOffscreen) return creatingOffscreen;
   creatingOffscreen = chrome.offscreen.createDocument({
     url: 'offscreen.html',
-    reasons: ['AUDIO_PLAYBACK'],
-    justification: 'Play Cloudflare Edge-TTS MP3 alerts while the GMGN tab is in the background.'
+    reasons: ['AUDIO_PLAYBACK', 'CLIPBOARD'],
+    justification: 'Play speech alerts and copy wallet token addresses while the GMGN tab is in the background.'
   }).then(() => { offscreenReady = true; return true; }).catch(async (error) => {
     if (/single offscreen|already exists/i.test(String(error?.message || error))) { offscreenReady = true; return true; }
     throw error;
@@ -1100,6 +1100,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // Messages explicitly targeted at the offscreen document must not be answered
   // by the service worker; otherwise the caller can receive the wrong responder.
   if (message.target === 'offscreen') return;
+
+  if (message.type === 'DSM_WALLET_COPY_CA') {
+    const ca = String(message.ca || '').trim();
+    if (!/^https:\/\/(?:[a-z0-9-]+\.)*gmgn\.ai\//i.test(sender.url || '') ||
+        !/^(?:0x[a-fA-F0-9]{40,128}|[1-9A-HJ-NP-Za-km-z]{32,44}|[EU]Q[A-Za-z0-9_-]{46})$/.test(ca)) {
+      sendResponse({ ok: false });
+      return;
+    }
+    ensureOffscreenDocument()
+      .then(() => chrome.runtime.sendMessage({ target: 'offscreen', type: 'DSM_WALLET_COPY_CA', ca }))
+      .then(sendResponse)
+      .catch((error) => {
+        offscreenReady = false;
+        sendResponse({ ok: false, reason: String(error?.message || error) });
+      });
+    return true;
+  }
 
   if (message.type === 'DSM_CROSS_TAB_GMGN_SEARCH') {
     const query = String(message.query || '').trim().slice(0, 80);

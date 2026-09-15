@@ -244,6 +244,20 @@ async function handleCountdownCommand(payload = {}) {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.target !== 'offscreen') return;
+  if (message.type === 'DSM_WALLET_COPY_CA') {
+    const area = document.createElement('textarea');
+    area.value = String(message.ca || '');
+    document.body.appendChild(area);
+    try {
+      area.select();
+      sendResponse({ ok: document.execCommand('copy') });
+    } catch (error) {
+      sendResponse({ ok: false, reason: String(error?.message || error) });
+    } finally {
+      area.remove();
+    }
+    return;
+  }
   if (message.type === 'DSM_EDGE_TTS_COMMAND') {
     enqueueSpeech(message.payload || {})
       .then(sendResponse)
