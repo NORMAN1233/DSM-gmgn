@@ -23,12 +23,11 @@
   let observationRoot = null;
   let bodyReadyListener = false;
   let flushScheduled = false;
-  let copySequence = 0;
+  let copyGeneration = 0;
   let copyQueue = Promise.resolve();
 
   const pendingRows = new Set();
-  const seenRows = new WeakMap();
-  const copyingRows = new WeakMap();
+  const rowCopies = new WeakMap();
 
   function isGMGNPage() {
     return /(^|\.)gmgn\.ai$/i.test(location.hostname || '');
@@ -45,6 +44,17 @@
     const match = href.match(TOKEN_ROUTE_RE);
     if (!match) return '';
     try { return normalizeCA(decodeURIComponent(match[1])); } catch (error) { return normalizeCA(match[1]); }
+  }
+
+  function tokenKeyFromRow(row, ca) {
+    // 身份包含链接里的链路径；不能用当前页面的链，也不能只按 CA 去重。
+    const href = String(row?.getAttribute?.('href') || '');
+    try {
+      const path = new URL(href, location.href).pathname;
+      return `${path.split(TOKEN_ROUTE_RE)[0].toLowerCase()}|${ca}`;
+    } catch (error) {
+      return `${href}|${ca}`;
+    }
   }
 
   function rowFromNode(node) {
@@ -127,23 +137,25 @@
     if (!ca) return;
     // 未渲染完整的行不能提前记为已处理，后续 side 文本变更还会再检查。
     if (!isBuyRow(row)) return;
-    if (seenRows.get(row) === ca) return;
-    if (copyingRows.get(row) === ca) return;
-    copyingRows.set(row, ca);
-    const sequence = ++copySequence;
+    const key = tokenKeyFromRow(row, ca);
+    const previous = rowCopies.get(row);
+    if (previous?.key === key && (previous.copied || previous.pending)) return;
+    // 保存本次预警快照。跨链切换或虚拟列表复用节点后，旧任务仍然有效。
+    const snapshot = { key, copied: false, pending: true };
+    rowCopies.set(row, snapshot);
+    const generation = copyGeneration;
     copyQueue = copyQueue.catch(() => {}).then(async () => {
-      if (!enabled || !masterEnabled || !row.isConnected || caFromRow(row) !== ca || !isBuyRow(row)) return;
-      let copied = await copyToClipboard(ca);
-      // 新消息已到达时，旧消息不再重试，避免覆盖最新 CA。
-      for (let attempt = 0; !copied && attempt < 2 && sequence === copySequence; attempt += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 40));
-        if (sequence !== copySequence || !enabled || !masterEnabled || !row.isConnected || caFromRow(row) !== ca) break;
-        copied = await copyToClipboard(ca);
+      let copied = false;
+      // 队列串行执行，上一条完成重试后才轮到下一条，不会覆盖后到的 CA。
+      for (let attempt = 0; !copied && attempt < 3; attempt += 1) {
+        if (attempt) await new Promise((resolve) => setTimeout(resolve, 40));
+        if (generation !== copyGeneration || !enabled || !masterEnabled) return;
+        try { copied = await copyToClipboard(ca); } catch (error) {}
       }
-      if (copied) seenRows.set(row, ca);
+      snapshot.copied = copied;
       window.dispatchEvent(new CustomEvent(RESULT_EVENT, { detail: { ca, copied } }));
     }).finally(() => {
-      if (copyingRows.get(row) === ca) copyingRows.delete(row);
+      snapshot.pending = false;
     });
   }
 
@@ -180,12 +192,12 @@
     try {
       for (const row of root.querySelectorAll(TRACKER_ROW_SELECTOR)) {
         const ca = caFromRow(row);
-        if (ca) seenRows.set(row, ca);
+        if (ca) rowCopies.set(row, { key: tokenKeyFromRow(row, ca), copied: true, pending: false });
       }
       for (const symbol of root.querySelectorAll(TRACKER_SYMBOL_SELECTOR)) {
         const row = symbol.closest?.('a[href]');
         const ca = caFromRow(row);
-        if (row && ca) seenRows.set(row, ca);
+        if (row && ca) rowCopies.set(row, { key: tokenKeyFromRow(row, ca), copied: true, pending: false });
       }
     } catch (error) {}
   }
@@ -247,7 +259,7 @@
     observationRoot = null;
     pendingRows.clear();
     flushScheduled = false;
-    copySequence += 1;
+    copyGeneration += 1;
   }
 
   chrome.storage.local.get([MASTER_KEY, SETTING_KEY]).then((data) => {
