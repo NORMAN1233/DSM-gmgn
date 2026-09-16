@@ -40,7 +40,11 @@
   }
 
   function caFromRow(row) {
-    const href = String(row?.getAttribute?.('href') || '');
+    return caFromHref(row?.getAttribute?.('href'));
+  }
+
+  function caFromHref(value) {
+    const href = String(value || '');
     const match = href.match(TOKEN_ROUTE_RE);
     if (!match) return '';
     try { return normalizeCA(decodeURIComponent(match[1])); } catch (error) { return normalizeCA(match[1]); }
@@ -49,6 +53,15 @@
   function tokenKeyFromRow(row, ca) {
     // 身份包含链接里的链路径；不能用当前页面的链，也不能只按 CA 去重。
     const href = String(row?.getAttribute?.('href') || '');
+    try {
+      const path = new URL(href, location.href).pathname;
+      return `${path.split(TOKEN_ROUTE_RE)[0].toLowerCase()}|${ca}`;
+    } catch (error) {
+      return `${href}|${ca}`;
+    }
+  }
+
+  function tokenKeyFromHref(href, ca) {
     try {
       const path = new URL(href, location.href).pathname;
       return `${path.split(TOKEN_ROUTE_RE)[0].toLowerCase()}|${ca}`;
@@ -131,13 +144,14 @@
     } catch (error) { return false; }
   }
 
-  async function processRow(row) {
-    if (!settingsReady || !enabled || !masterEnabled || !row?.isConnected) return;
-    const ca = caFromRow(row);
+  async function processRow(row, capturedHref = '') {
+    if (!settingsReady || !enabled || !masterEnabled || !row) return;
+    const href = capturedHref || String(row.getAttribute?.('href') || '');
+    const ca = caFromHref(href);
     if (!ca) return;
     // 未渲染完整的行不能提前记为已处理，后续 side 文本变更还会再检查。
     if (!isBuyRow(row)) return;
-    const key = tokenKeyFromRow(row, ca);
+    const key = tokenKeyFromHref(href, ca);
     const previous = rowCopies.get(row);
     if (previous?.key === key && (previous.copied || previous.pending)) return;
     // 保存本次预警快照。跨链切换或虚拟列表复用节点后，旧任务仍然有效。
@@ -211,7 +225,16 @@
       const addedRows = new Set();
       const changedRows = new Set();
       for (const mutation of mutations) {
-        if (mutation.type === 'attributes' || mutation.type === 'characterData' || mutation.type === 'childList') {
+        if (mutation.type === 'attributes' && mutation.attributeName === 'href') {
+          const changed = rowFromNode(mutation.target);
+          if (changed) {
+            // href 可能在同一 MutationObserver 批次内连续改写；oldValue 是中间预警的唯一快照。
+            if (mutation.oldValue && caFromHref(mutation.oldValue) && isBuyRow(changed)) {
+              processRow(changed, mutation.oldValue).catch(() => {});
+            }
+            changedRows.add(changed);
+          }
+        } else if (mutation.type === 'attributes' || mutation.type === 'characterData' || mutation.type === 'childList') {
           const changed = rowFromNode(mutation.target);
           if (changed) changedRows.add(changed);
         }
@@ -231,7 +254,8 @@
       subtree: true,
       characterData: true,
       attributes: true,
-      attributeFilter: ['href', 'class', 'data-testid', 'data-sentry-component', 'data-sentry-source-file']
+      attributeFilter: ['href', 'class', 'data-testid', 'data-sentry-component', 'data-sentry-source-file'],
+      attributeOldValue: true
     });
     return true;
   }
