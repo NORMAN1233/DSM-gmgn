@@ -45,6 +45,26 @@ function appendRuntimeLog(entry = {}) {
   }).catch(() => {});
 }
 
+// Serialize rapid shortcut presses so each reads the previous persisted state.
+let walletCopyToggleQueue = Promise.resolve();
+chrome.commands.onCommand.addListener((command) => {
+  if (command !== 'toggle-wallet-copy') return;
+  walletCopyToggleQueue = walletCopyToggleQueue.then(async () => {
+    const key = 'dsmSetting_officialWalletCopyEnabled';
+    const data = await chrome.storage.local.get([key, 'dsmSetting_dsmEnabled', 'dsmSettings']);
+    const enabled = !(data[key] ?? data.dsmSettings?.officialWalletCopyEnabled ?? true);
+    const masterOn = data.dsmSetting_dsmEnabled ?? data.dsmSettings?.dsmEnabled ?? true;
+    await chrome.storage.local.set({ [key]: enabled });
+    const text = `自动复制新消息 CA 已${enabled ? '开启' : '关闭'}${enabled && !masterOn ? '（总开关已关闭，暂不生效）' : ''}`;
+    appendRuntimeLog({ level: 'info', category: '设置', title: text, detail: '快捷键切换' });
+    const tabs = await chrome.tabs.query({ url: ['https://gmgn.ai/*', 'https://*.gmgn.ai/*'] });
+    await Promise.allSettled(tabs.filter((tab) => Number.isInteger(tab.id)).map((tab) =>
+      chrome.tabs.sendMessage(tab.id, { type: 'DSM_WALLET_COPY_STATUS', text })));
+  }).catch((error) => {
+    appendRuntimeLog({ level: 'error', category: '设置', title: '自动复制快捷键处理失败', detail: String(error?.message || error) });
+  });
+});
+
 const EDGE_TTS_VOICES = new Set([
   'zh-CN-XiaoxiaoNeural',
   'zh-CN-YunjianNeural',
@@ -1100,6 +1120,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // Messages explicitly targeted at the offscreen document must not be answered
   // by the service worker; otherwise the caller can receive the wrong responder.
   if (message.target === 'offscreen') return;
+
+  if (message.type === 'DSM_DEV_ARKM_SEARCH') {
+    const address = String(message.address || '').trim();
+    if (!/^https:\/\/(?:[a-z0-9-]+\.)*gmgn\.ai\//i.test(sender.url || '') ||
+        !/^(?:0x[a-fA-F0-9]{40}|[1-9A-HJ-NP-Za-km-z]{32,44})$/.test(address)) {
+      sendResponse({ ok: false, reason: '无效的 Dev 地址或来源' });
+      return;
+    }
+    (async () => {
+      const data = await chrome.storage.local.get(['dsmSettings', 'dsmSetting_dsmEnabled', 'dsmSetting_devArkmEnabled']);
+      const master = data.dsmSetting_dsmEnabled ?? data.dsmSettings?.dsmEnabled ?? true;
+      const enabled = data.dsmSetting_devArkmEnabled ?? data.dsmSettings?.devArkmEnabled ?? false;
+      if (!master || !enabled) return { ok: false, reason: 'Dev ARKM 查询开关已关闭' };
+      const tabs = await chrome.tabs.query({ url: ['https://arkm.com/*', 'https://*.arkm.com/*'] });
+      // Prefer an existing explorer, then the most recently accessed ARKM tab.
+      tabs.sort((a, b) => Number(/\/explorer(?:\/|$)/.test(b.url || '')) - Number(/\/explorer(?:\/|$)/.test(a.url || '')) ||
+        (b.lastAccessed || 0) - (a.lastAccessed || 0));
+      const target = tabs.find((tab) => Number.isInteger(tab.id));
+      if (!target) return { ok: false, reason: '请先打开 ARKM 页面' };
+      await chrome.tabs.update(target.id, { url: `https://arkm.com/explorer/address/${encodeURIComponent(address)}` });
+      return { ok: true, targetTabId: target.id };
+    })().then(sendResponse).catch((error) => sendResponse({ ok: false, reason: String(error?.message || error) }));
+    return true;
+  }
 
   if (message.type === 'DSM_WALLET_COPY_CA') {
     const ca = String(message.ca || '').trim();

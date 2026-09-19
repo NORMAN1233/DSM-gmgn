@@ -117,6 +117,13 @@
         <strong>官方钱包监控</strong>
         <small>GMGN 弹出新的官方钱包交易消息时，自动复制消息里的代币 CA；支持不同链，不按链名过滤。</small>
         <label class="popup-enable-row"><span><b>自动复制新消息 CA</b><small>只处理新出现的通知，不扫描历史消息</small></span><input id="officialWalletCopyEnabled" type="checkbox" checked><i><em></em></i></label>
+        <small id="walletCopyShortcut">快捷键：未设置</small>
+        <button id="configureWalletCopyShortcut" class="save" type="button">自定义快捷键</button>
+        <small>在浏览器快捷键页面找到 DSM-gmgn →「开启 / 关闭自动复制新消息 CA」。总开关关闭时不会启动复制。</small>
+      </div>
+      <div class="notify-card">
+        <strong>Dev 地址查询</strong>
+        <label class="popup-enable-row"><span><b>点击 Dev 在 ARKM 查询</b><small>同时打开 GMGN 和 ARKM 后，点击 Dev 标志，在已有 ARKM 标签页查看钱包地址</small></span><input id="devArkmEnabled" type="checkbox"><i><em></em></i></label>
       </div>
       <p id="socialMessage" class="message"></p>
     </section>

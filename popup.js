@@ -17,6 +17,7 @@ const DEFAULT_SETTINGS = {
   twitterNaturalPriority: true,
   selectionSearchEnabled: true,
   axiomPrimaryEnabled: false,
+  devArkmEnabled: false,
   decisionEnabled: true,
   countdownVoiceEnabled: true,
   batteryEnabled: true,
@@ -70,6 +71,7 @@ const els = {
   officialWalletCopyEnabled: $('officialWalletCopyEnabled'),
   selectionSearchEnabled: $('selectionSearchEnabled'),
   axiomPrimaryEnabled: $('axiomPrimaryEnabled'),
+  devArkmEnabled: $('devArkmEnabled'),
   decisionEnabled: $('decisionEnabled'),
   countdownVoiceEnabled: $('countdownVoiceEnabled'),
   batteryEnabled: $('batteryEnabled'),
@@ -129,6 +131,7 @@ function getSettingsFromControls() {
     officialWalletCopyEnabled: !!els.officialWalletCopyEnabled?.checked,
     selectionSearchEnabled: els.selectionSearchEnabled.checked,
     axiomPrimaryEnabled: els.axiomPrimaryEnabled.checked,
+    devArkmEnabled: els.devArkmEnabled.checked,
     decisionEnabled: els.decisionEnabled.checked,
     countdownVoiceEnabled: els.countdownVoiceEnabled.checked,
     batteryEnabled: els.batteryEnabled.checked,
@@ -273,6 +276,7 @@ function applySettings(settings) {
   if (els.officialWalletCopyEnabled) els.officialWalletCopyEnabled.checked = !!s.officialWalletCopyEnabled;
   els.selectionSearchEnabled.checked = !!s.selectionSearchEnabled;
   els.axiomPrimaryEnabled.checked = !!s.axiomPrimaryEnabled;
+  els.devArkmEnabled.checked = !!s.devArkmEnabled;
   els.decisionEnabled.checked = !!s.decisionEnabled;
   els.countdownVoiceEnabled.checked = !!s.countdownVoiceEnabled;
   els.batteryEnabled.checked = !!s.batteryEnabled;
@@ -290,6 +294,7 @@ function applySettings(settings) {
   if (els.twitterVoicePreview) els.twitterVoicePreview.disabled = !masterOn || !s.twitterVoiceEnabled;
   if (els.officialWalletCopyEnabled) els.officialWalletCopyEnabled.disabled = !masterOn;
   els.selectionSearchEnabled.disabled = !masterOn;
+  els.devArkmEnabled.disabled = !masterOn;
   els.axiomPrimaryEnabled.disabled = !masterOn || !s.selectionSearchEnabled;
   els.decisionEnabled.disabled = !masterOn;
   els.countdownVoiceEnabled.disabled = !masterOn || !s.decisionEnabled;
@@ -375,6 +380,16 @@ async function init() {
   }
   if (els.headerVersion) els.headerVersion.textContent = `v${version}`;
 
+  $('configureWalletCopyShortcut').addEventListener('click', () => {
+    chrome.tabs.create({ url: 'chrome://extensions/shortcuts' }).catch(() => {
+      showMessage(els.socialMessage, '请手动打开浏览器扩展管理 → 键盘快捷键');
+    });
+  });
+  chrome.commands.getAll().then((commands) => {
+    const command = commands.find((item) => item.name === 'toggle-wallet-copy');
+    $('walletCopyShortcut').textContent = `快捷键：${command?.shortcut || '未设置'}`;
+  }).catch(() => { $('walletCopyShortcut').textContent = '快捷键：请在浏览器扩展管理中查看'; });
+
   const storedSettings = await loadStoredSettings();
   applySettings(storedSettings);
   populateVoiceOptions(storedSettings.twitterVoiceName).catch(() => {});
@@ -438,6 +453,7 @@ function advancedSaveBindings() {
     [els.officialWalletCopyEnabled, 'officialWalletCopyEnabled'],
     [els.selectionSearchEnabled, 'selectionSearchEnabled'],
     [els.axiomPrimaryEnabled, 'axiomPrimaryEnabled'],
+    [els.devArkmEnabled, 'devArkmEnabled'],
     [els.decisionEnabled, 'decisionEnabled'],
     [els.countdownVoiceEnabled, 'countdownVoiceEnabled'],
     [els.batteryEnabled, 'batteryEnabled'],
@@ -454,7 +470,7 @@ function advancedSaveBindings() {
       if (els.masterEnabled.checked) {
         const messageEl = control === els.viewedEnabled
           ? els.viewedMessage
-          : (control === els.twitterVoiceEnabled || control === els.twitterVoiceVolume || control === els.twitterVoiceName || control === els.twitterVoiceRate || control === els.officialWalletCopyEnabled || control === els.selectionSearchEnabled || control === els.axiomPrimaryEnabled
+          : (control === els.twitterVoiceEnabled || control === els.twitterVoiceVolume || control === els.twitterVoiceName || control === els.twitterVoiceRate || control === els.officialWalletCopyEnabled || control === els.selectionSearchEnabled || control === els.axiomPrimaryEnabled || control === els.devArkmEnabled
             ? els.socialMessage
             : (control === els.decisionEnabled || control === els.batteryEnabled || control === els.countdownVoiceEnabled
               ? els.decisionMessage
@@ -479,6 +495,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
     officialWalletCopyEnabled: [els.officialWalletCopyEnabled],
     selectionSearchEnabled: [els.selectionSearchEnabled],
     axiomPrimaryEnabled: [els.axiomPrimaryEnabled],
+    devArkmEnabled: [els.devArkmEnabled],
     decisionEnabled: [els.decisionEnabled],
     countdownVoiceEnabled: [els.countdownVoiceEnabled],
     batteryEnabled: [els.batteryEnabled],
@@ -494,7 +511,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
     if (!change) continue;
     touched = true;
     for (const control of controls) {
-      if (!control || document.activeElement === control) continue;
+      if (!control || (document.activeElement === control && control.type !== 'checkbox')) continue;
       if (control.type === 'checkbox') control.checked = !!change.newValue;
       else control.value = String(change.newValue);
     }
