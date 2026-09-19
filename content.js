@@ -1587,7 +1587,7 @@
     return false;
   }
 
-  function showSelectionRouteToast(text, ok = true) {
+  function showSelectionRouteToast(text, ok = true, prominent = false) {
     let toast = document.getElementById('dsm-selection-route-toast');
     if (!toast) {
       toast = document.createElement('div');
@@ -1613,12 +1613,21 @@
       document.documentElement.appendChild(toast);
     }
     toast.textContent = text;
+    toast.setAttribute('role', 'status');
+    toast.setAttribute('aria-live', 'polite');
+    Object.assign(toast.style, {
+      top: prominent ? '24%' : '12px',
+      padding: prominent ? '22px 32px' : '7px 11px',
+      fontSize: prominent ? '22px' : '12px',
+      lineHeight: prominent ? '32px' : '16px',
+      fontWeight: prominent ? '700' : '400'
+    });
     toast.style.background = ok ? 'rgba(35, 126, 74, .94)' : 'rgba(185, 52, 52, .94)';
     toast.style.opacity = '1';
     clearTimeout(showSelectionRouteToast.timer);
     showSelectionRouteToast.timer = setTimeout(() => {
       if (toast) toast.style.opacity = '0';
-    }, 1300);
+    }, prominent ? 4500 : 1300);
   }
 
   function handleSearchRouteResponse(response, query) {
@@ -1746,48 +1755,76 @@
   // Delegate to support virtualized rows and SPA navigation without scanning the page.
   const DEV_ICON_SELECTOR = '[data-icon="IconDev16pxRegular"], [data-sentry-element="IconDev16pxRegular"]';
 
-  function devAddressFromBadge(badge) {
-    const addressRE = /^(?:0x[a-fA-F0-9]{40}|[1-9A-HJ-NP-Za-km-z]{32,44})$/;
-    // Only wallet routes associated with this badge; never infer a Dev from a token URL.
-    const link = badge.closest('a[href]') || badge.querySelector('a[href]');
-    if (link) {
-      try {
-        const url = new URL(link.getAttribute('href'), location.href);
-        if (/(^|\.)gmgn\.ai$/i.test(url.hostname)) {
-          const match = url.pathname.match(/\/(?:address|wallet)\/([^/]+)\/?$/);
-          const address = match ? decodeURIComponent(match[1]) : '';
-          if (addressRE.test(address)) return address;
-        }
-      } catch (error) {}
+  const DEV_ADDRESS_SELECTOR = 'div.truncate.w-full.line-clamp-1.items-center.font-medium.text-text-100';
+  let cancelDevAddressWait = null;
+  let devLookupSequence = 0;
+
+  function visibleDevAddresses() {
+    return new Map(Array.from(document.querySelectorAll(DEV_ADDRESS_SELECTOR)).flatMap((node) => {
+      const address = node.textContent.trim();
+      const style = getComputedStyle(node);
+      if (!node.getClientRects().length || style.visibility === 'hidden' || style.display === 'none' ||
+          !/^(?:0x[a-fA-F0-9]{40}|[1-9A-HJ-NP-Za-km-z]{32,44})$/.test(address)) return [];
+      return [[node, address]];
+    }));
+  }
+
+  function waitForDevSidebar() {
+    cancelDevAddressWait?.();
+    const sequence = ++devLookupSequence;
+    // Snapshot before GMGN handles the click: existing wallets cannot become this Dev.
+    const before = visibleDevAddresses();
+    const href = location.href;
+    let candidate = '';
+    let candidateAt = 0;
+    let observer, interval, timeout;
+    function stop() {
+      observer?.disconnect();
+      clearInterval(interval);
+      clearTimeout(timeout);
+      if (cancelDevAddressWait === stop) cancelDevAddressWait = null;
     }
-    // Some layouts store the full address on the badge instead of an anchor.
-    for (const node of [badge, badge.parentElement]) {
-      for (const key of ['data-dev-address', 'data-wallet-address']) {
-        const address = node?.getAttribute(key) || '';
-        if (addressRE.test(address)) return address;
+    function check() {
+      if (!isMasterOn() || !settings.devArkmEnabled || location.href !== href) { stop(); return; }
+      const fresh = new Set([...visibleDevAddresses()].filter(([node, address]) => before.get(node) !== address).map(([, address]) => address));
+      const address = fresh.size === 1 ? [...fresh][0] : '';
+      if (!address || address !== candidate) { candidate = address; candidateAt = Date.now(); return; }
+      // Allow transitions/loading placeholders to settle before sending exactly once.
+      if (Date.now() - candidateAt < 250) return;
+      stop();
+      chrome.runtime.sendMessage({ type: 'DSM_DEV_ARKM_SEARCH', address }).then((result) => {
+        if (sequence !== devLookupSequence) return;
+        showSelectionRouteToast(result?.ok ? 'Dev 地址已发送到 ARKM' : (result?.reason || 'ARKM 查询失败'), !!result?.ok, !result?.ok);
+      }).catch(() => {
+        if (sequence === devLookupSequence) showSelectionRouteToast('ARKM 查询失败，请刷新插件和 GMGN 页面', false, true);
+      });
+    }
+    cancelDevAddressWait = stop;
+    observer = new MutationObserver(check);
+    observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+    interval = setInterval(check, 100); // Also detects a pre-mounted sidebar becoming visible.
+    timeout = setTimeout(() => {
+      stop();
+      if (isMasterOn() && settings.devArkmEnabled && location.href === href) {
+        showSelectionRouteToast('未识别到新打开的 Dev 钱包地址，请关闭侧栏后重试', false, true);
       }
-    }
-    return '';
+    }, 6000);
+    showSelectionRouteToast('正在等待 Dev 钱包侧栏…');
   }
 
   window.addEventListener('click', (event) => {
     if (!IS_GMGN || !isMasterOn() || !settings.devArkmEnabled || event.button !== 0 ||
         event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
     const target = nodeElement(event.target);
-    const icon = target?.closest(DEV_ICON_SELECTOR) || target?.closest('div')?.querySelector(DEV_ICON_SELECTOR);
+    let icon = target?.closest(DEV_ICON_SELECTOR);
+    // Clicking the age/name child must resolve the same badge as clicking the SVG.
+    for (let node = target, depth = 0; !icon && node && depth < 3; depth++, node = node.parentElement) {
+      const candidate = node.querySelector?.(DEV_ICON_SELECTOR);
+      if (candidate?.parentElement?.contains(target)) icon = candidate;
+    }
     const badge = icon?.parentElement;
     if (!badge || !badge.contains(target)) return;
-    const address = devAddressFromBadge(badge);
-    if (!address) {
-      showSelectionRouteToast('未找到 Dev 完整钱包地址，请提供 Dev 外层钱包链接', false);
-      return;
-    }
-    event.preventDefault();
-    event.stopImmediatePropagation();
-    chrome.runtime.sendMessage({ type: 'DSM_DEV_ARKM_SEARCH', address }).then((result) => {
-      showSelectionRouteToast(result?.ok ? 'Dev 地址已发送到 ARKM' :
-        (result?.reason || 'ARKM 查询失败'), !!result?.ok);
-    }).catch(() => showSelectionRouteToast('ARKM 查询失败，请刷新插件和 GMGN 页面', false));
+    waitForDevSidebar(); // Keep native click propagation so GMGN opens the wallet.
   }, true);
 
   function normalizeSelectedSearchText(value) {
@@ -1959,8 +1996,8 @@
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (!message || !message.type) return;
 
-    if (message.type === 'DSM_WALLET_COPY_STATUS' && IS_GMGN) {
-      showSelectionRouteToast(String(message.text || ''));
+    if (message.type === 'DSM_WALLET_COPY_STATUS') {
+      showSelectionRouteToast(String(message.text || ''), !String(message.text).includes('关闭'), true);
       sendResponse({ ok: true });
       return;
     }

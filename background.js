@@ -57,7 +57,12 @@ chrome.commands.onCommand.addListener((command) => {
     await chrome.storage.local.set({ [key]: enabled });
     const text = `自动复制新消息 CA 已${enabled ? '开启' : '关闭'}${enabled && !masterOn ? '（总开关已关闭，暂不生效）' : ''}`;
     appendRuntimeLog({ level: 'info', category: '设置', title: text, detail: '快捷键切换' });
-    const tabs = await chrome.tabs.query({ url: ['https://gmgn.ai/*', 'https://*.gmgn.ai/*'] });
+    await chrome.notifications.create('dsm-wallet-copy-status', {
+      type: 'basic', iconUrl: chrome.runtime.getURL('gmgn-logo.png'),
+      title: 'DSM · 自动复制新消息 CA', message: text,
+      priority: 2
+    }).catch(() => {});
+    const tabs = await chrome.tabs.query({ url: SUPPORTED_TAB_URLS });
     await Promise.allSettled(tabs.filter((tab) => Number.isInteger(tab.id)).map((tab) =>
       chrome.tabs.sendMessage(tab.id, { type: 'DSM_WALLET_COPY_STATUS', text })));
   }).catch((error) => {
@@ -1114,6 +1119,7 @@ async function routeCrossTabSearch(query, sender, preferAxiom = false) {
 }
 
 
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message?.type) return;
 
@@ -1124,6 +1130,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'DSM_DEV_ARKM_SEARCH') {
     const address = String(message.address || '').trim();
     if (!/^https:\/\/(?:[a-z0-9-]+\.)*gmgn\.ai\//i.test(sender.url || '') ||
+        !Number.isInteger(sender.tab?.id) ||
         !/^(?:0x[a-fA-F0-9]{40}|[1-9A-HJ-NP-Za-km-z]{32,44})$/.test(address)) {
       sendResponse({ ok: false, reason: '无效的 Dev 地址或来源' });
       return;
