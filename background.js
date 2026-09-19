@@ -46,6 +46,31 @@ function appendRuntimeLog(entry = {}) {
 }
 
 // Serialize rapid shortcut presses so each reads the previous persisted state.
+function showWalletCopyStatus(message, active) {
+  const id = 'dsm-shortcut-status-toast';
+  let host = document.getElementById(id);
+  if (!host?.shadowRoot) {
+    host?.remove();
+    host = document.createElement('div');
+    host.id = id;
+    host.attachShadow({ mode: 'open' });
+    const panel = document.createElement('div');
+    panel.setAttribute('role', 'status');
+    panel.setAttribute('aria-live', 'assertive');
+    host.shadowRoot.appendChild(panel);
+    (document.fullscreenElement || document.documentElement).appendChild(host);
+  }
+  host.style.cssText = 'all:initial!important;position:fixed!important;inset:24% auto auto 50%!important;transform:translateX(-50%)!important;z-index:2147483647!important;margin:0!important;padding:0!important;border:0!important;background:transparent!important;max-width:90vw!important;pointer-events:none!important;display:block!important;';
+  const panel = host.shadowRoot.firstChild;
+  panel.style.cssText = `padding:22px 32px;border-radius:12px;font:700 22px/32px system-ui,sans-serif;color:#fff;text-align:center;box-shadow:0 6px 28px #0006;background:${active ? '#237e4a' : '#b93434'};`;
+  panel.textContent = message;
+  // The top layer keeps the notice above wallet dialogs; older browsers use z-index.
+  try { host.setAttribute('popover', 'manual'); host.showPopover(); } catch (error) {}
+  clearTimeout(host._dsmHideTimer);
+  host._dsmHideTimer = setTimeout(() => host.remove(), 4500);
+  return { shown: true };
+}
+
 let walletCopyToggleQueue = Promise.resolve();
 chrome.commands.onCommand.addListener((command) => {
   if (command !== 'toggle-wallet-copy') return;
@@ -57,39 +82,20 @@ chrome.commands.onCommand.addListener((command) => {
     await chrome.storage.local.set({ [key]: enabled });
     const text = `自动复制新消息 CA 已${enabled ? '开启' : '关闭'}${enabled && !masterOn ? '（总开关已关闭，暂不生效）' : ''}`;
     appendRuntimeLog({ level: 'info', category: '设置', title: text, detail: '快捷键切换' });
-    await chrome.notifications.create('dsm-wallet-copy-status', {
+    // System notifications are supplemental: unavailable/slow OS notifications
+    // must never prevent the page notice or block the next shortcut press.
+    Promise.resolve().then(() => chrome.notifications?.create('dsm-wallet-copy-status', {
       type: 'basic', iconUrl: chrome.runtime.getURL('gmgn-logo.png'),
       title: 'DSM · 自动复制新消息 CA', message: text,
       priority: 2
-    }).catch(() => {});
-    const tabs = await chrome.tabs.query({ url: SUPPORTED_TAB_URLS });
+    })).catch(() => {});
+    const tabs = await chrome.tabs.query({ url: [...SUPPORTED_TAB_URLS, 'https://arkm.com/*', 'https://*.arkm.com/*'] });
     const targets = tabs.filter((tab) => Number.isInteger(tab.id));
-    await Promise.allSettled(targets.map(async (tab) => {
-      try {
-        await chrome.tabs.sendMessage(tab.id, { type: 'DSM_WALLET_COPY_STATUS', text });
-        return;
-      } catch (error) {
-        // Existing tabs may still have the old content script after an extension
-        // reload. Inject a standalone toast so the shortcut is always visible.
-        if (!/^https:\/\/(?:[a-z0-9-]+\.)?(?:gmgn|axiom)\.ai?\//i.test(tab.url || '') &&
-            !/^https:\/\/(?:[a-z0-9-]+\.)*axiom\.trade\//i.test(tab.url || '')) return;
-        await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: (message) => {
-          const id = 'dsm-shortcut-status-toast';
-          let toast = document.getElementById(id);
-          if (!toast) {
-            toast = document.createElement('div');
-            toast.id = id;
-            Object.assign(toast.style, { position: 'fixed', zIndex: '2147483647', left: '50%', top: '24%', transform: 'translateX(-50%)', padding: '22px 32px', borderRadius: '10px', font: '700 22px/32px system-ui,sans-serif', color: '#fff', boxShadow: '0 6px 28px rgba(0,0,0,.4)', pointerEvents: 'none' });
-            (document.documentElement || document.body).appendChild(toast);
-          }
-          toast.textContent = message;
-          toast.style.background = /关闭/.test(message) ? 'rgba(185,52,52,.96)' : 'rgba(35,126,74,.96)';
-          toast.style.opacity = '1';
-          clearTimeout(window.__dsmShortcutToastTimer);
-          window.__dsmShortcutToastTimer = setTimeout(() => { toast.style.opacity = '0'; }, 4500);
-        }, args: [text] });
-      }
-    }));
+    const results = await Promise.allSettled(targets.map((tab) => chrome.scripting.executeScript({
+      target: { tabId: tab.id }, func: showWalletCopyStatus, args: [text, enabled && masterOn]
+    })));
+    const failures = results.filter((result) => result.status === 'rejected');
+    if (failures.length) appendRuntimeLog({ level: 'warn', category: '设置', title: '快捷键提示未能显示在部分页面', detail: failures.map((result) => String(result.reason?.message || result.reason)).join('；') });
   }).catch((error) => {
     appendRuntimeLog({ level: 'error', category: '设置', title: '自动复制快捷键处理失败', detail: String(error?.message || error) });
   });
