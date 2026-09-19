@@ -63,8 +63,33 @@ chrome.commands.onCommand.addListener((command) => {
       priority: 2
     }).catch(() => {});
     const tabs = await chrome.tabs.query({ url: SUPPORTED_TAB_URLS });
-    await Promise.allSettled(tabs.filter((tab) => Number.isInteger(tab.id)).map((tab) =>
-      chrome.tabs.sendMessage(tab.id, { type: 'DSM_WALLET_COPY_STATUS', text })));
+    const targets = tabs.filter((tab) => Number.isInteger(tab.id));
+    await Promise.allSettled(targets.map(async (tab) => {
+      try {
+        await chrome.tabs.sendMessage(tab.id, { type: 'DSM_WALLET_COPY_STATUS', text });
+        return;
+      } catch (error) {
+        // Existing tabs may still have the old content script after an extension
+        // reload. Inject a standalone toast so the shortcut is always visible.
+        if (!/^https:\/\/(?:[a-z0-9-]+\.)?(?:gmgn|axiom)\.ai?\//i.test(tab.url || '') &&
+            !/^https:\/\/(?:[a-z0-9-]+\.)*axiom\.trade\//i.test(tab.url || '')) return;
+        await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: (message) => {
+          const id = 'dsm-shortcut-status-toast';
+          let toast = document.getElementById(id);
+          if (!toast) {
+            toast = document.createElement('div');
+            toast.id = id;
+            Object.assign(toast.style, { position: 'fixed', zIndex: '2147483647', left: '50%', top: '24%', transform: 'translateX(-50%)', padding: '22px 32px', borderRadius: '10px', font: '700 22px/32px system-ui,sans-serif', color: '#fff', boxShadow: '0 6px 28px rgba(0,0,0,.4)', pointerEvents: 'none' });
+            (document.documentElement || document.body).appendChild(toast);
+          }
+          toast.textContent = message;
+          toast.style.background = /关闭/.test(message) ? 'rgba(185,52,52,.96)' : 'rgba(35,126,74,.96)';
+          toast.style.opacity = '1';
+          clearTimeout(window.__dsmShortcutToastTimer);
+          window.__dsmShortcutToastTimer = setTimeout(() => { toast.style.opacity = '0'; }, 4500);
+        }, args: [text] });
+      }
+    }));
   }).catch((error) => {
     appendRuntimeLog({ level: 'error', category: '设置', title: '自动复制快捷键处理失败', detail: String(error?.message || error) });
   });
