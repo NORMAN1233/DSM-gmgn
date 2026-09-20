@@ -245,6 +245,10 @@ async function handleCountdownCommand(payload = {}) {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.target !== 'offscreen') return;
   if (message.type === 'DSM_WALLET_COPY_CA') {
+    if (message.deadline && Date.now() >= message.deadline) {
+      sendResponse({ ok: false, reason: 'clipboard-timeout' });
+      return;
+    }
     const area = document.createElement('textarea');
     area.value = String(message.ca || '');
     document.body.appendChild(area);

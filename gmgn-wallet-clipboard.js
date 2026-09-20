@@ -11,10 +11,9 @@
     'a[data-sentry-source-file="TrackerListItem.tsx"][href]'
   ].join(',');
   const TRACKER_SYMBOL_SELECTOR = '[data-testid="follow-tracking-row-symbol"]';
-  const TRACKER_SIDE_SELECTOR = '[data-testid="follow-tracking-row-side"]';
   const TOKEN_ROUTE_RE = /\/(?:token|pump|meme|coin|pair|pool)\/([^/?#]+)/i;
   const CA_RE = /^(?:0x[a-fA-F0-9]{40,128}|[1-9A-HJ-NP-Za-km-z]{32,44}|[EU]Q[A-Za-z0-9_-]{46})$/;
-  const BUY_SIDE_RE = /建仓|加仓|买入|buy|bought|open|opened|add|added|increase/i;
+  const COPY_TIMEOUT_MS = 600;
 
   let enabled = true;
   let masterEnabled = true;
@@ -25,6 +24,7 @@
   let flushScheduled = false;
   let copyGeneration = 0;
   let copyQueue = Promise.resolve();
+  const changedSettings = new Set();
 
   const pendingRows = new Set();
   const rowCopies = new WeakMap();
@@ -110,12 +110,6 @@
     return fallback || row?.parentElement || null;
   }
 
-  function isBuyRow(row) {
-    const side = String(row?.querySelector?.(TRACKER_SIDE_SELECTOR)?.textContent || '').trim();
-    if (side) return BUY_SIDE_RE.test(side);
-    return /(?:^|\s)(?:bg-green|text-increase|border-line-green)/i.test(String(row?.className || ''));
-  }
-
   async function copyToClipboard(value) {
     // 同步路径先写入，避免等待异步 API 超时；保留用户原来的焦点和选区。
     const focused = document.activeElement;
@@ -138,10 +132,16 @@
       for (const range of ranges) selection.addRange(range);
     }
     if (copied) return true;
+    let timer;
     try {
-      const result = await chrome.runtime.sendMessage({ type: 'DSM_WALLET_COPY_CA', ca: value });
+      const deadline = Date.now() + COPY_TIMEOUT_MS;
+      const result = await Promise.race([
+        chrome.runtime.sendMessage({ type: 'DSM_WALLET_COPY_CA', ca: value, deadline }),
+        new Promise((resolve) => { timer = setTimeout(() => resolve({ ok: false }), COPY_TIMEOUT_MS); })
+      ]);
       return result?.ok === true;
     } catch (error) { return false; }
+    finally { clearTimeout(timer); }
   }
 
   async function processRow(row, capturedHref = '') {
@@ -149,8 +149,7 @@
     const href = capturedHref || String(row.getAttribute?.('href') || '');
     const ca = caFromHref(href);
     if (!ca) return;
-    // 未渲染完整的行不能提前记为已处理，后续 side 文本变更还会再检查。
-    if (!isBuyRow(row)) return;
+    // 官方追踪的 token 链接已足够确定 CA；不等待方向文字，也不漏掉卖出行。
     const key = tokenKeyFromHref(href, ca);
     const previous = rowCopies.get(row);
     if (previous?.key === key && (previous.copied || previous.pending)) return;
@@ -176,6 +175,7 @@
   function enqueueRow(row) {
     if (!row || !caFromRow(row)) return;
     pendingRows.add(row);
+    if (!settingsReady) return;
     if (flushScheduled) return;
     flushScheduled = true;
     queueMicrotask(() => {
@@ -229,7 +229,7 @@
           const changed = rowFromNode(mutation.target);
           if (changed) {
             // href 可能在同一 MutationObserver 批次内连续改写；oldValue 是中间预警的唯一快照。
-            if (mutation.oldValue && caFromHref(mutation.oldValue) && isBuyRow(changed)) {
+            if (settingsReady && mutation.oldValue && caFromHref(mutation.oldValue)) {
               processRow(changed, mutation.oldValue).catch(() => {});
             }
             changedRows.add(changed);
@@ -261,7 +261,7 @@
   }
 
   function start() {
-    if (!settingsReady || !enabled || !masterEnabled || !isGMGNPage() || observer) return;
+    if (!enabled || !masterEnabled || !isGMGNPage() || observer) return;
     if (!document.body) {
       if (!bodyReadyListener) {
         bodyReadyListener = true;
@@ -286,18 +286,21 @@
     copyGeneration += 1;
   }
 
-  chrome.storage.local.get([MASTER_KEY, SETTING_KEY]).then((data) => {
-    masterEnabled = data[MASTER_KEY] !== false;
-    enabled = data[SETTING_KEY] !== false;
+  // Observe while settings load, retaining new rows without copying until authorized.
+  start();
+  chrome.storage.local.get([MASTER_KEY, SETTING_KEY, 'dsmSettings']).then((data) => {
+    if (!changedSettings.has(MASTER_KEY)) masterEnabled = (data[MASTER_KEY] ?? data.dsmSettings?.dsmEnabled) !== false;
+    if (!changedSettings.has(SETTING_KEY)) enabled = (data[SETTING_KEY] ?? data.dsmSettings?.officialWalletCopyEnabled) !== false;
+  }).catch(() => {}).finally(() => {
     settingsReady = true;
+    if (!enabled || !masterEnabled) { stop(); return; }
     start();
-  }).catch(() => {
-    settingsReady = true;
-    start();
+    for (const row of pendingRows) enqueueRow(row);
   });
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
+    for (const key of [MASTER_KEY, SETTING_KEY]) if (changes[key]) changedSettings.add(key);
     if (changes[MASTER_KEY]) masterEnabled = changes[MASTER_KEY].newValue !== false;
     if (changes[SETTING_KEY]) enabled = changes[SETTING_KEY].newValue !== false;
     if (enabled && masterEnabled) start();

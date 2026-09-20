@@ -1185,13 +1185,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === 'DSM_WALLET_COPY_CA') {
     const ca = String(message.ca || '').trim();
+    const deadline = Math.min(Number(message.deadline) || Date.now() + 600, Date.now() + 600);
     if (!/^https:\/\/(?:[a-z0-9-]+\.)*gmgn\.ai\//i.test(sender.url || '') ||
         !/^(?:0x[a-fA-F0-9]{40,128}|[1-9A-HJ-NP-Za-km-z]{32,44}|[EU]Q[A-Za-z0-9_-]{46})$/.test(ca)) {
       sendResponse({ ok: false });
       return;
     }
     ensureOffscreenDocument()
-      .then(() => chrome.runtime.sendMessage({ target: 'offscreen', type: 'DSM_WALLET_COPY_CA', ca }))
+      .then(() => Date.now() >= deadline
+        ? { ok: false, reason: 'clipboard-timeout' }
+        : chrome.runtime.sendMessage({ target: 'offscreen', type: 'DSM_WALLET_COPY_CA', ca, deadline }))
       .then(sendResponse)
       .catch((error) => {
         offscreenReady = false;

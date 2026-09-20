@@ -27,7 +27,7 @@ async function waitFor(check) {
   assert.ok(check(), 'clipboard work did not finish');
 }
 
-async function setup(t, { history = [], backend } = {}) {
+async function setup(t, { history = [], backend, settings } = {}) {
   const dom = new JSDOM('<main id="tracker"></main>', {
     url: 'https://gmgn.ai/sol', runScripts: 'outside-only'
   });
@@ -59,7 +59,7 @@ async function setup(t, { history = [], backend } = {}) {
   };
   window.chrome = {
     storage: {
-      local: { get: async () => ({}) },
+      local: { get: async () => settings ? settings.promise : ({}) },
       onChanged: { addListener: (listener) => { settingsChanged = listener; } }
     },
     runtime: {
@@ -158,15 +158,57 @@ test('mixed batches copy oldest to newest and retain the top alert last', async 
   assert.deepEqual(h.writes, [SOL, RH, SOL_NEXT, RH_NEXT]);
 });
 
-test('an unfinished row copies when its buy side renders later', async (t) => {
+test('a filtered official row copies as soon as its CA arrives without waiting for side text', async (t) => {
   const h = await setup(t);
   const delayed = h.row(RH, '');
   h.list.append(delayed);
   await flush();
-  assert.deepEqual(h.writes, []);
+  assert.deepEqual(h.writes, [RH]);
   delayed.querySelector('[data-testid="follow-tracking-row-side"]').textContent = '买入';
   await flush();
   assert.deepEqual(h.writes, [RH]);
+});
+
+test('new rows arriving during settings load are copied, pre-existing rows are not', async (t) => {
+  const settings = deferred();
+  const h = await setup(t, { settings, history: [RH_NEXT] });
+  h.list.prepend(h.row(SOL));
+  await flush();
+  assert.deepEqual(h.writes, []);
+  settings.resolve({});
+  await flush();
+  assert.deepEqual(h.writes, [SOL]);
+});
+
+test('disabled settings discard rows collected during initialization', async (t) => {
+  const settings = deferred();
+  const h = await setup(t, { settings });
+  h.list.prepend(h.row(SOL));
+  await flush();
+  settings.resolve({ dsmSetting_officialWalletCopyEnabled: false });
+  await flush();
+  assert.deepEqual(h.writes, []);
+});
+
+test('a newer switch change wins over a stale settings read', async (t) => {
+  const settings = deferred();
+  const h = await setup(t, { settings });
+  h.enable(false);
+  settings.resolve({ dsmSetting_officialWalletCopyEnabled: true });
+  await flush();
+  h.list.prepend(h.row(SOL));
+  await flush();
+  assert.deepEqual(h.writes, []);
+});
+
+test('a missing backend response times out and retries without permanently blocking the next CA', async (t) => {
+  const h = await setup(t, { backend: async (_, n) => n === 1 ? new Promise(() => {}) : true });
+  h.list.prepend(h.row(SOL));
+  await flush();
+  h.list.prepend(h.row(RH));
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  await waitFor(() => h.writes.includes(RH));
+  assert.deepEqual(h.writes, [SOL, RH]);
 });
 
 test('each alert retries a temporary failure even when another chain is queued', async (t) => {
