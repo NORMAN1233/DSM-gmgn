@@ -1,5 +1,4 @@
 'use strict';
-importScripts('wallet-shortcut.js');
 
 // DSM-gmgn v2.9.5 — GMGN/Axiom trading helpers + GMGN Edge-TTS playback.
 const recentSpeech = new Map();
@@ -47,12 +46,34 @@ function appendRuntimeLog(entry = {}) {
 }
 
 // Serialize rapid shortcut presses so each reads the previous persisted state.
+function showWalletCopyStatus(message, active) {
+  const id = 'dsm-shortcut-status-toast';
+  let host = document.getElementById(id);
+  if (!host?.shadowRoot) {
+    host?.remove();
+    host = document.createElement('div');
+    host.id = id;
+    host.attachShadow({ mode: 'open' });
+    const panel = document.createElement('div');
+    panel.setAttribute('role', 'status');
+    panel.setAttribute('aria-live', 'assertive');
+    host.shadowRoot.appendChild(panel);
+    (document.fullscreenElement || document.documentElement).appendChild(host);
+  }
+  host.style.cssText = 'all:initial!important;position:fixed!important;inset:24% auto auto 50%!important;transform:translateX(-50%)!important;z-index:2147483647!important;margin:0!important;padding:0!important;border:0!important;background:transparent!important;max-width:90vw!important;pointer-events:none!important;display:block!important;';
+  const panel = host.shadowRoot.firstChild;
+  panel.style.cssText = `padding:22px 32px;border-radius:12px;font:700 22px/32px system-ui,sans-serif;color:#fff;text-align:center;box-shadow:0 6px 28px #0006;background:${active ? '#237e4a' : '#b93434'};`;
+  panel.textContent = message;
+  // The top layer keeps the notice above wallet dialogs; older browsers use z-index.
+  try { host.setAttribute('popover', 'manual'); host.showPopover(); } catch (error) {}
+  clearTimeout(host._dsmHideTimer);
+  host._dsmHideTimer = setTimeout(() => host.remove(), 4500);
+  return { shown: true };
+}
 
 let walletCopyToggleQueue = Promise.resolve();
-let lastWalletToggle = null;
-function toggleWalletCopy(source = 'browser') {
-  // The same combination can reach both Chrome Commands and the page listener.
-  if (lastWalletToggle && lastWalletToggle.source !== source && Date.now() - lastWalletToggle.at < 350) return lastWalletToggle.result;
+chrome.commands.onCommand.addListener((command) => {
+  if (command !== 'toggle-wallet-copy') return;
   walletCopyToggleQueue = walletCopyToggleQueue.then(async () => {
     const key = 'dsmSetting_officialWalletCopyEnabled';
     const data = await chrome.storage.local.get([key, 'dsmSetting_dsmEnabled', 'dsmSettings']);
@@ -60,7 +81,7 @@ function toggleWalletCopy(source = 'browser') {
     const masterOn = data.dsmSetting_dsmEnabled ?? data.dsmSettings?.dsmEnabled ?? true;
     await chrome.storage.local.set({ [key]: enabled });
     const text = `自动复制新消息 CA 已${enabled ? '开启' : '关闭'}${enabled && !masterOn ? '（总开关已关闭，暂不生效）' : ''}`;
-    appendRuntimeLog({ level: 'info', category: '设置', title: text, detail: `快捷键切换 · ${source}` });
+    appendRuntimeLog({ level: 'info', category: '设置', title: text, detail: '快捷键切换' });
     // System notifications are supplemental: unavailable/slow OS notifications
     // must never prevent the page notice or block the next shortcut press.
     Promise.resolve().then(() => chrome.notifications?.create('dsm-wallet-copy-status', {
@@ -68,31 +89,16 @@ function toggleWalletCopy(source = 'browser') {
       title: 'DSM · 自动复制新消息 CA', message: text,
       priority: 2
     })).catch(() => {});
-    // Never queue the next toggle behind a discarded/frozen tab's script injection.
-    showWalletCopyFeedback(text, enabled && masterOn).catch((error) => {
-      appendRuntimeLog({ level: 'warn', category: '设置', title: '快捷键提示发送失败', detail: String(error?.message || error) });
-    });
-    return { ok: true, text, active: enabled && masterOn };
+    const tabs = await chrome.tabs.query({ url: [...SUPPORTED_TAB_URLS, 'https://arkm.com/*', 'https://*.arkm.com/*'] });
+    const targets = tabs.filter((tab) => Number.isInteger(tab.id));
+    const results = await Promise.allSettled(targets.map((tab) => chrome.scripting.executeScript({
+      target: { tabId: tab.id }, func: showWalletCopyStatus, args: [text, enabled && masterOn]
+    })));
+    const failures = results.filter((result) => result.status === 'rejected');
+    if (failures.length) appendRuntimeLog({ level: 'warn', category: '设置', title: '快捷键提示未能显示在部分页面', detail: failures.map((result) => String(result.reason?.message || result.reason)).join('；') });
   }).catch((error) => {
     appendRuntimeLog({ level: 'error', category: '设置', title: '自动复制快捷键处理失败', detail: String(error?.message || error) });
-    return { ok: false, text: '自动复制切换失败，请重新加载扩展', active: false };
   });
-  lastWalletToggle = { at: Date.now(), source, result: walletCopyToggleQueue };
-  return walletCopyToggleQueue;
-}
-
-async function showWalletCopyFeedback(text, active) {
-  const tabs = await chrome.tabs.query({ url: [...SUPPORTED_TAB_URLS, 'https://arkm.com/*', 'https://*.arkm.com/*'] });
-  const targets = tabs.filter((tab) => Number.isInteger(tab.id) && !tab.discarded);
-  const results = await Promise.allSettled(targets.map((tab) => chrome.scripting.executeScript({
-    target: { tabId: tab.id }, func: showWalletCopyStatus, args: [text, active]
-  })));
-  const failures = results.filter((result) => result.status === 'rejected');
-  if (failures.length) appendRuntimeLog({ level: 'warn', category: '设置', title: '快捷键提示未能显示在部分页面', detail: failures.map((result) => String(result.reason?.message || result.reason)).join('；') });
-}
-
-chrome.commands.onCommand.addListener((command) => {
-  if (command === 'toggle-wallet-copy') toggleWalletCopy('browser');
 });
 
 const EDGE_TTS_VOICES = new Set([
@@ -215,72 +221,6 @@ async function ensureOffscreenDocument() {
     throw error;
   }).finally(() => { creatingOffscreen = null; });
   return creatingOffscreen;
-}
-
-const walletWriterEpoch = Date.now();
-let walletWriteRevision = 0;
-let walletCurrentTarget = null;
-const walletStreamSequences = new Map();
-
-function acceptWalletTarget(message, source = '', cancelOnly = false) {
-  const stream = source + '|' + String(message.streamId || 'legacy');
-  const sequence = Number.isSafeInteger(message.sequence) ? message.sequence : walletWriteRevision + 1;
-  if (sequence < (walletStreamSequences.get(stream) ?? -1)) return null;
-  walletStreamSequences.delete(stream);
-  walletStreamSequences.set(stream, sequence);
-  while (walletStreamSequences.size > 256) walletStreamSequences.delete(walletStreamSequences.keys().next().value);
-  if (cancelOnly && walletCurrentTarget?.stream !== stream) return null;
-  walletCurrentTarget = { writerEpoch: walletWriterEpoch, revision: ++walletWriteRevision, stream };
-  return walletCurrentTarget;
-}
-
-function cancelWalletCopy(message, source) {
-  const ticket = acceptWalletTarget(message, source, true);
-  if (ticket) {
-    // No document creation for cancellations. Advance the writer watermark if it is alive.
-    chrome.runtime.sendMessage({ target: 'offscreen', type: 'DSM_WALLET_COPY_CANCEL', ...ticket }).catch(() => {});
-  }
-  return { ok: true };
-}
-
-async function copyWalletCA(message, source = '') {
-  const ticket = acceptWalletTarget(message, source);
-  const requestId = String(message.requestId || '');
-  if (!ticket) return { ok: false, reason: 'superseded', requestId };
-  const ca = String(message.ca || '').trim();
-  const deadline = Math.min(Number(message.deadline) || Date.now() + 1500, Date.now() + 1500);
-  let timer;
-  const rejected = () => ticket !== walletCurrentTarget ? 'superseded' : Date.now() >= deadline ? 'clipboard-timeout' : '';
-  const work = async () => {
-    let reason = rejected();
-    if (reason) return { ok: false, reason, requestId };
-    const data = await chrome.storage.local.get(['dsmSetting_officialWalletCopyEnabled', 'dsmSetting_dsmEnabled', 'dsmSettings']);
-    if ((data.dsmSetting_officialWalletCopyEnabled ?? data.dsmSettings?.officialWalletCopyEnabled ?? true) === false ||
-        (data.dsmSetting_dsmEnabled ?? data.dsmSettings?.dsmEnabled ?? true) === false) {
-      return { ok: false, reason: 'copy-disabled', requestId };
-    }
-    for (let attempt = 0; attempt < 2; attempt++) {
-      if ((reason = rejected())) return { ok: false, reason, requestId };
-      await ensureOffscreenDocument();
-      if ((reason = rejected())) return { ok: false, reason, requestId };
-      try {
-        const reply = await chrome.runtime.sendMessage({ target: 'offscreen', type: 'DSM_WALLET_COPY_CA', ca, requestId, deadline, ...ticket });
-        if ((reason = rejected())) return { ok: false, reason, requestId };
-        return reply || { ok: false, reason: 'clipboard-no-response', requestId };
-      } catch (error) {
-        offscreenReady = false;
-        if (attempt || rejected()) throw error;
-      }
-    }
-  };
-  try {
-    // Independent targets never wait for an older request or its timeout.
-    return await Promise.race([work(), new Promise((resolve) => {
-      timer = setTimeout(() => resolve({ ok: false, reason: rejected() || 'clipboard-timeout', requestId }), Math.max(0, deadline - Date.now()));
-    })]);
-  } catch (error) {
-    return { ok: false, reason: String(error?.message || error), requestId };
-  } finally { clearTimeout(timer); }
 }
 
 async function sendEdgeTtsCommand(payload = {}, timeoutMs = 20000, retry = true, messageType = 'DSM_EDGE_TTS_COMMAND') {
@@ -1218,15 +1158,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // by the service worker; otherwise the caller can receive the wrong responder.
   if (message.target === 'offscreen') return;
 
-  if (message.type === 'DSM_TOGGLE_WALLET_COPY') {
-    if (!/^https:\/\/(?:[a-z0-9-]+\.)*(?:gmgn\.ai|axiom\.trade|arkm\.com)\//i.test(sender.url || '') || !Number.isInteger(sender.tab?.id)) {
-      sendResponse({ ok: false, text: '不支持的快捷键页面', active: false });
-      return;
-    }
-    toggleWalletCopy('page').then(sendResponse);
-    return true;
-  }
-
   if (message.type === 'DSM_DEV_ARKM_SEARCH') {
     const address = String(message.address || '').trim();
     if (!/^https:\/\/(?:[a-z0-9-]+\.)*gmgn\.ai\//i.test(sender.url || '') ||
@@ -1252,19 +1183,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  if (message.type === 'DSM_WALLET_COPY_PREPARE') {
-    if (!/^https:\/\/(?:[a-z0-9-]+\.)*gmgn\.ai\//i.test(sender.url || '')) return;
-    ensureOffscreenDocument().catch(() => {});
-    sendResponse({ ok: true });
-    return;
-  }
-
-  if (message.type === 'DSM_WALLET_COPY_CANCEL') {
-    if (!/^https:\/\/(?:[a-z0-9-]+\.)*gmgn\.ai\//i.test(sender.url || '')) return;
-    sendResponse(cancelWalletCopy(message, String(sender.tab?.id || '')));
-    return;
-  }
-
   if (message.type === 'DSM_WALLET_COPY_CA') {
     const ca = String(message.ca || '').trim();
     if (!/^https:\/\/(?:[a-z0-9-]+\.)*gmgn\.ai\//i.test(sender.url || '') ||
@@ -1272,10 +1190,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ ok: false });
       return;
     }
-    copyWalletCA({ ...message, ca }, String(sender.tab?.id || '')).then((result) => {
-      if (!result.ok && result.reason !== 'superseded') appendRuntimeLog({ level: 'warn', category: '自动复制', title: 'CA 复制未完成', detail: `${ca} · ${result.reason || 'clipboard-rejected'}` });
-      sendResponse(result);
-    });
+    ensureOffscreenDocument()
+      .then(() => chrome.runtime.sendMessage({ target: 'offscreen', type: 'DSM_WALLET_COPY_CA', ca }))
+      .then(sendResponse)
+      .catch((error) => {
+        offscreenReady = false;
+        sendResponse({ ok: false, reason: String(error?.message || error) });
+      });
     return true;
   }
 

@@ -242,31 +242,15 @@ async function handleCountdownCommand(payload = {}) {
   return { ok: true, engine: 'edge-tts', channel: 'countdown' };
 }
 
-let walletWriteWatermark = { writerEpoch: 0, revision: 0 };
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.target !== 'offscreen') return;
-  if (message.type === 'DSM_WALLET_COPY_CA' || message.type === 'DSM_WALLET_COPY_CANCEL') {
-    if (!Number.isFinite(message.writerEpoch) || !Number.isSafeInteger(message.revision) ||
-        message.writerEpoch < walletWriteWatermark.writerEpoch ||
-        (message.writerEpoch === walletWriteWatermark.writerEpoch && message.revision < walletWriteWatermark.revision)) {
-      sendResponse({ ok: false, reason: 'superseded', requestId: message.requestId });
-      return;
-    }
-    walletWriteWatermark = { writerEpoch: message.writerEpoch, revision: message.revision };
-    if (message.type === 'DSM_WALLET_COPY_CANCEL') { sendResponse({ ok: true }); return; }
-    // A timed-out request may arrive after a newer CA. Never write it late.
-    if (!Number.isFinite(message.deadline) || Date.now() >= message.deadline) {
-      sendResponse({ ok: false, reason: 'clipboard-timeout', requestId: message.requestId });
-      return;
-    }
+  if (message.type === 'DSM_WALLET_COPY_CA') {
     const area = document.createElement('textarea');
     area.value = String(message.ca || '');
     document.body.appendChild(area);
     try {
-      area.focus();
       area.select();
-      const ok = document.execCommand('copy');
-      sendResponse({ ok, reason: ok ? '' : 'clipboard-rejected', requestId: message.requestId });
+      sendResponse({ ok: document.execCommand('copy') });
     } catch (error) {
       sendResponse({ ok: false, reason: String(error?.message || error) });
     } finally {
