@@ -5,9 +5,10 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'background.js'), 'utf8');
-const code = source.slice(source.indexOf('function showWalletCopyStatus('), source.indexOf('const EDGE_TTS_VOICES'));
+const shared = fs.readFileSync(path.join(__dirname, '..', 'wallet-shortcut.js'), 'utf8');
+const code = shared + '\n' + source.slice(source.indexOf('let walletCopyToggleQueue'), source.indexOf('const EDGE_TTS_VOICES'));
 
-function setup(notifications, failTab = false) {
+function setup(notifications, failTab = false, stuckTab = false) {
   let listener;
   const state = { dsmSetting_officialWalletCopyEnabled: false };
   const injections = [], logs = [], queries = [];
@@ -24,6 +25,7 @@ function setup(notifications, failTab = false) {
       } },
       tabs: { query: async (query) => { queries.push(query); return [{ id: 1 }, { id: 2 }]; } },
       scripting: { executeScript: async (options) => {
+        if (stuckTab) return new Promise(() => {});
         if (failTab && options.target.tabId === 1) throw new Error('tab closed');
         injections.push(options);
         return [{ result: { shown: true } }];
@@ -34,6 +36,7 @@ function setup(notifications, failTab = false) {
   return { state, injections, logs, queries, async toggle() {
     listener('toggle-wallet-copy');
     await vm.runInContext('walletCopyToggleQueue', context);
+    await new Promise((resolve) => setImmediate(resolve));
   } };
 }
 
@@ -47,6 +50,14 @@ test('unavailable notifications cannot stop on/off page notices', async () => {
   assert.match(app.injections[2].args[0], /已关闭/);
   assert.equal(app.injections[2].args[1], false);
   assert.ok(app.queries[0].url.includes('https://arkm.com/*'));
+});
+
+test('a frozen tab cannot block the next shortcut toggle', { timeout: 1000 }, async () => {
+  const app = setup(undefined, false, true);
+  await app.toggle();
+  assert.equal(app.state.dsmSetting_officialWalletCopyEnabled, true);
+  await app.toggle();
+  assert.equal(app.state.dsmSetting_officialWalletCopyEnabled, false);
 });
 
 test('pending system notification does not block the shortcut queue', { timeout: 1000 }, async () => {

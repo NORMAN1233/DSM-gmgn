@@ -115,11 +115,14 @@
       </div>
       <div class="notify-card">
         <strong>官方钱包监控</strong>
-        <small>GMGN 弹出新的官方钱包交易消息时，自动复制消息里的代币 CA；支持不同链，不按链名过滤。</small>
-        <label class="popup-enable-row"><span><b>自动复制新消息 CA</b><small>只处理新出现的通知，不扫描历史消息</small></span><input id="officialWalletCopyEnabled" type="checkbox" checked><i><em></em></i></label>
-        <small id="walletCopyShortcut">快捷键：未设置</small>
+        <small>跟随 GMGN 官方追踪列表顶部的新交易，复制该条代币 CA；买入、卖出及不同链都支持。</small>
+        <label class="popup-enable-row"><span><b>自动复制新消息 CA</b><small>以顶部最新消息为准；查看旧消息时暂停，返回顶部后等待下一条新消息</small></span><input id="officialWalletCopyEnabled" type="checkbox" checked><i><em></em></i></label>
+        <small id="walletCopyShortcut" aria-live="polite">页面快捷键：未设置</small>
         <button id="configureWalletCopyShortcut" class="save" type="button">自定义快捷键</button>
-        <small>在浏览器快捷键页面找到 DSM-gmgn →「开启 / 关闭自动复制新消息 CA」。总开关关闭时不会启动复制。</small>
+        <button id="clearWalletCopyShortcut" class="save" type="button">清除页面快捷键</button>
+        <small>点击上方按钮后按组合键即可保存，例如 Ctrl + Shift + Y。在 GMGN、Axiom、ARKM 页面生效，输入文字时不触发；Esc 取消录制。</small>
+        <small id="browserWalletCopyShortcut">浏览器快捷键：读取中</small>
+        <button id="browserWalletCopyShortcutSettings" class="save" type="button">浏览器快捷键设置</button>
       </div>
       <div class="notify-card">
         <strong>Dev 地址查询</strong>
@@ -173,6 +176,7 @@
     </section>
   </main>
 
+  <script src="wallet-shortcut.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

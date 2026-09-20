@@ -845,7 +845,7 @@
   // 大小写）、纯金额/数字徽标、回复标签形状（回复/Reply 开头）的文本，一律拒绝。
   function normalizeRemarkText(text, handleLower) {
     let value = cleanText(text);
-    if (!value) return false;
+    if (!value) return '';
     const handle = normalizeHandleKey(handleLower);
     if (handle) {
       // Older builds could persist an orange wrapper whose text was
@@ -859,7 +859,10 @@
     // than the user's plain GMGN remark. Reject it instead of caching mixed text.
     if (/@[a-z0-9_]{1,15}\b/i.test(value)) return '';
     if (/^[$€£￥]?\d+(?:[.,]\d+)?\s*[kmb]?$/i.test(value)) return '';
-    if (/^回复/.test(value) || /^repl/i.test(value)) return '';
+    // Labels such as “↪ 回复” pass a raw startsWith check, then lose the arrow
+    // during TTS sanitization and become “回复”. Validate the spoken form too,
+    // including when reading metadata persisted by older versions.
+    if (/^(?:回复|repl)/i.test(sanitizeSpokenAuthor(value))) return '';
     return value.slice(0, 80);
   }
 
@@ -955,12 +958,16 @@
 
   function captureTwitterRemark(handleAnchor, scope) {
     if (!handleAnchor || !scope?.contains?.(handleAnchor)) return;
+    if (handleAnchor.closest(social.BODY_SELECTOR)) return;
     const handleLower = profileHandleFromHref(handleAnchor.getAttribute('href'));
     if (!handleLower) return;
 
     let node = handleAnchor.parentElement;
     for (let depth = 0; node && depth < 10; depth += 1, node = node.parentElement) {
       if (!scope.contains(node)) break;
+      // Stop at the header boundary. Reply labels and quoted names can share
+      // the remark color, but must never be associated with the outer author.
+      if (node.matches(social.BODY_SELECTOR) || node.querySelector(social.BODY_SELECTOR)) break;
       const handles = profileHandleAnchors(node);
       if (handles.length > 1) break; // 越过卡片进入列表容器，避免误配他人
 
@@ -1220,7 +1227,7 @@
   // 命中 GMGN 备注返回可播报名；空串表示未命中。
   function resolveSpokenName(trigger) {
     for (const key of remarkCandidateKeys(trigger)) {
-      const hit = sanitizeSpokenAuthor(social.remarkMap.get(key));
+      const hit = sanitizeSpokenAuthor(normalizeRemarkText(social.remarkMap.get(key), key));
       if (hit) {
         // 一旦由任一 WS 字段准确命中备注，就固化昵称别名；下次即使 id/tw
         // 字段换成数字 ID，也可直接从 u.n 反查到用户备注。

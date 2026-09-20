@@ -380,15 +380,54 @@ async function init() {
   }
   if (els.headerVersion) els.headerVersion.textContent = `v${version}`;
 
-  $('configureWalletCopyShortcut').addEventListener('click', () => {
+  const shortcutKey = 'dsmSetting_walletCopyShortcut';
+  const shortcutLabel = $('walletCopyShortcut');
+  const recordShortcut = $('configureWalletCopyShortcut');
+  let recordingShortcut = false;
+  let savedShortcut = null;
+  function displayShortcut() {
+    shortcutLabel.textContent = `页面快捷键：${walletShortcutLabel(savedShortcut)}`;
+    recordShortcut.textContent = '自定义快捷键';
+  }
+  chrome.storage.local.get(shortcutKey).then((data) => { savedShortcut = data[shortcutKey] || null; displayShortcut(); }).catch(() => {});
+  recordShortcut.addEventListener('click', () => {
+    recordingShortcut = !recordingShortcut;
+    if (recordingShortcut) {
+      recordShortcut.textContent = '正在录制，按组合键…';
+      shortcutLabel.textContent = '请按 Ctrl / Alt / ⌘ 加字母或数字，也支持 F1–F12';
+    } else displayShortcut();
+  });
+  document.addEventListener('keydown', async (event) => {
+    if (!recordingShortcut) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    if (event.key === 'Escape') { recordingShortcut = false; displayShortcut(); return; }
+    if (event.repeat || event.isComposing) return;
+    const binding = walletShortcutFromEvent(event);
+    if (!binding) return;
+    recordingShortcut = false;
+    try {
+      await chrome.storage.local.set({ [shortcutKey]: binding });
+      savedShortcut = binding;
+      displayShortcut();
+      showMessage(els.socialMessage, '快捷键已保存，返回页面即可使用');
+    } catch (error) { displayShortcut(); showMessage(els.socialMessage, '快捷键保存失败，请重试'); }
+  }, true);
+  $('clearWalletCopyShortcut').addEventListener('click', async () => {
+    await chrome.storage.local.remove(shortcutKey);
+    recordingShortcut = false;
+    savedShortcut = null;
+    displayShortcut();
+  });
+  $('browserWalletCopyShortcutSettings').addEventListener('click', () => {
     chrome.tabs.create({ url: 'chrome://extensions/shortcuts' }).catch(() => {
       showMessage(els.socialMessage, '请手动打开浏览器扩展管理 → 键盘快捷键');
     });
   });
   chrome.commands.getAll().then((commands) => {
     const command = commands.find((item) => item.name === 'toggle-wallet-copy');
-    $('walletCopyShortcut').textContent = `快捷键：${command?.shortcut || '未设置'}`;
-  }).catch(() => { $('walletCopyShortcut').textContent = '快捷键：请在浏览器扩展管理中查看'; });
+    $('browserWalletCopyShortcut').textContent = `浏览器快捷键：${command?.shortcut || '未设置'}`;
+  }).catch(() => { $('browserWalletCopyShortcut').textContent = '浏览器快捷键：请在扩展管理中查看'; });
 
   const storedSettings = await loadStoredSettings();
   applySettings(storedSettings);
