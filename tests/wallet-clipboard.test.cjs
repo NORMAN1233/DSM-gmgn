@@ -104,14 +104,49 @@ function press(h, options = {}, target = h.window.document.body) {
   return event;
 }
 
-test('single C requests navigation without clipboard access', async (t) => {
+test('single C synchronously clicks the latest actual row and bubbles to GMGN handlers', async (t) => {
   const h = await setup(t);
-  h.list.prepend(h.row(SOL));
+  const row = h.row(SOL);
+  const clicks = [];
+  h.list.addEventListener('click', (event) => { clicks.push(event.target); event.preventDefault(); });
+  h.list.prepend(row);
   await flush();
   assert.equal(press(h).defaultPrevented, true);
+  assert.deepEqual(clicks, [row]);
   await flush();
-  assert.equal(h.opens.length, 1);
+  assert.equal(h.opens.length, 0);
   assert.deepEqual(h.writes, []);
+});
+
+test('removed or reused notifications never fall back to URL navigation or click another token', async (t) => {
+  const h = await setup(t);
+  const row = h.row(SOL);
+  let clicks = 0;
+  row.addEventListener('click', (event) => { clicks += 1; event.preventDefault(); });
+  h.list.prepend(row);
+  await flush();
+  row.href = `/robinhood/token/${RH}`;
+  press(h);
+  assert.equal(clicks, 0);
+  await flush();
+  press(h);
+  assert.equal(clicks, 1);
+  row.remove();
+  press(h);
+  assert.equal(clicks, 1);
+  assert.match(h.window.document.getElementById('dsm-wallet-click-status').textContent, /消失或更新/);
+  assert.equal(h.opens.length, 0);
+});
+
+test('a batch of new notifications clicks the topmost row only', async (t) => {
+  const h = await setup(t);
+  const top = h.row(RH);
+  h.list.append(top, h.row(SOL));
+  const clicks = [];
+  h.list.addEventListener('click', (event) => { clicks.push(event.target); event.preventDefault(); });
+  await flush();
+  press(h);
+  assert.deepEqual(clicks, [top]);
 });
 
 test('typing, composition, modifier keys, repeats and disabled mode do not navigate', async (t) => {

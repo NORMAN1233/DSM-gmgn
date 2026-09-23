@@ -13,7 +13,7 @@ function setup(result, url = 'https://gmgn.ai/sol') {
     appendRuntimeLog: () => {},
     sendTabMessage: async (id, message) => {
       assert.equal(id, 17);
-      assert.equal(message.type, 'DSM_WALLET_LATEST_TOKEN');
+      assert.equal(message.type, 'DSM_WALLET_CLICK_LATEST');
       return result;
     },
     chrome: {
@@ -28,11 +28,11 @@ function setup(result, url = 'https://gmgn.ai/sol') {
   vm.runInContext(code, context);
   return { updates, notices, async press() { listener('toggle-wallet-copy'); await vm.runInContext('walletCopyToggleQueue', context); } };
 }
-test('existing shortcut opens the captured URL in the current GMGN tab', async () => {
+test('existing shortcut asks the page to click without updating the tab URL', async () => {
   const url = 'https://gmgn.ai/robinhood/token/0x1111111111111111111111111111111111111111';
   const app = setup({ ok: true, url });
   await app.press();
-  assert.deepEqual(app.updates, [{ id: 17, url }]);
+  assert.deepEqual(app.updates, []);
 });
 test('missing notifications or disabled feature show the reason without navigating', async () => {
   const app = setup({ ok: false, reason: '尚未收到新的钱包通知' });

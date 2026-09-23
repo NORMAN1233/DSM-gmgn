@@ -77,12 +77,9 @@ async function openLatestWalletToken(tab) {
     let host;
     try { host = new URL(tab.url).hostname; } catch { return; }
     if (!/(^|\.)gmgn\.ai$/i.test(host)) return;
-    const result = await sendTabMessage(tab.id, { type: 'DSM_WALLET_LATEST_TOKEN' });
+    const result = await sendTabMessage(tab.id, { type: 'DSM_WALLET_CLICK_LATEST' });
     if (result?.ok) {
-      const url = new URL(result.url);
-      if (url.protocol !== 'https:' || !/(^|\.)gmgn\.ai$/i.test(url.hostname)) return;
-      await chrome.tabs.update(tab.id, { url: url.href });
-      appendRuntimeLog({ level: 'success', category: 'K线跳转', title: '钱包通知 K 线已打开', detail: result.ca });
+      appendRuntimeLog({ level: 'success', category: 'K线跳转', title: '已点击最新钱包通知', detail: result.ca });
     } else {
       await chrome.scripting.executeScript({
         target: { tabId: tab.id }, func: showWalletCopyStatus,
@@ -1158,12 +1155,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // Messages explicitly targeted at the offscreen document must not be answered
   // by the service worker; otherwise the caller can receive the wrong responder.
   if (message.target === 'offscreen') return;
-
-  if (message.type === 'DSM_WALLET_OPEN_LATEST') {
-    openLatestWalletToken(sender.tab).then(() => sendResponse({ ok: true }))
-      .catch(() => sendResponse({ ok: false }));
-    return true;
-  }
 
   if (message.type === 'DSM_DEV_ARKM_SEARCH') {
     const address = String(message.address || '').trim();

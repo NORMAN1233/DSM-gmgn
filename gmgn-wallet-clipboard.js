@@ -119,17 +119,39 @@
     const key = tokenKeyFromHref(href, ca);
     if (rowTokens.get(row)?.key === key) return;
     rowTokens.set(row, { key });
-    latestToken = { ca, url: url.href };
+    latestToken = { ca, url: url.href, row };
+  }
+
+  function clickLatestNotification() {
+    if (!isGMGNPage() || !settingsReady || !masterEnabled || !enabled) {
+      return { ok: false, reason: '请先开启插件和钱包快捷跳转' };
+    }
+    if (!latestToken) return { ok: false, reason: '尚未收到新的钱包通知，请等待新消息' };
+    const { row, ca, url } = latestToken;
+    // Only activate the actual captured notification, never navigate a saved URL.
+    if (!row.isConnected || row.href !== url) {
+      return { ok: false, reason: '最新钱包通知已消失或更新，请等待新消息' };
+    }
+    try {
+      row.click();
+      return { ok: true, ca };
+    } catch {
+      return { ok: false, reason: '钱包通知点击失败，请重试' };
+    }
   }
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message?.type === 'DSM_WALLET_CLICK_LATEST') {
+      sendResponse(clickLatestNotification());
+      return;
+    }
     if (message?.type !== 'DSM_WALLET_LATEST_TOKEN') return;
     if (!settingsReady || !masterEnabled || !enabled) {
       sendResponse({ ok: false, reason: '请先开启插件和钱包快捷跳转' });
     } else if (!latestToken) {
       sendResponse({ ok: false, reason: '尚未收到新的钱包通知，请等待新消息' });
     } else {
-      sendResponse({ ok: true, ...latestToken });
+      sendResponse({ ok: true, ca: latestToken.ca, url: latestToken.url });
     }
   });
 
@@ -148,8 +170,23 @@
     event.preventDefault();
     event.stopImmediatePropagation();
     opening = true;
-    Promise.resolve().then(() => chrome.runtime.sendMessage({ type: 'DSM_WALLET_OPEN_LATEST' }))
-      .catch(() => {}).finally(() => { opening = false; });
+    // Stay in the physical key event so GMGN's own click handler runs immediately.
+    try {
+      const result = clickLatestNotification();
+      if (!result.ok) {
+        let notice = document.getElementById('dsm-wallet-click-status');
+        if (!notice) {
+          notice = document.createElement('div');
+          notice.id = 'dsm-wallet-click-status';
+          notice.setAttribute('role', 'status');
+          notice.style.cssText = 'position:fixed;top:24%;left:50%;transform:translateX(-50%);z-index:2147483647;padding:16px 24px;border-radius:10px;background:#b93434;color:white;font:16px system-ui;pointer-events:none';
+          document.body.appendChild(notice);
+        }
+        notice.textContent = result.reason;
+        clearTimeout(notice.hideTimer);
+        notice.hideTimer = setTimeout(() => notice.remove(), 3000);
+      }
+    } finally { opening = false; }
   }, true);
 
   function enqueueRow(row) {
