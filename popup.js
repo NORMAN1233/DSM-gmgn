@@ -380,16 +380,6 @@ async function init() {
   }
   if (els.headerVersion) els.headerVersion.textContent = `v${version}`;
 
-  $('configureWalletCopyShortcut').addEventListener('click', () => {
-    chrome.tabs.create({ url: 'chrome://extensions/shortcuts' }).catch(() => {
-      showMessage(els.socialMessage, '请手动打开浏览器扩展管理 → 键盘快捷键');
-    });
-  });
-  chrome.commands.getAll().then((commands) => {
-    const command = commands.find((item) => item.name === 'toggle-wallet-copy');
-    $('walletCopyShortcut').textContent = `快捷键：${command?.shortcut || '未设置'}`;
-  }).catch(() => { $('walletCopyShortcut').textContent = '快捷键：请在浏览器扩展管理中查看'; });
-
   const storedSettings = await loadStoredSettings();
   applySettings(storedSettings);
   populateVoiceOptions(storedSettings.twitterVoiceName).catch(() => {});

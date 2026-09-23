@@ -133,6 +133,25 @@
     }
   });
 
+  function isEditing(element) {
+    return !!(element?.isContentEditable || element?.closest?.(
+      'input,textarea,select,[contenteditable]:not([contenteditable="false"]),[role="textbox"],[role="combobox"]'
+    ));
+  }
+
+  let opening = false;
+  window.addEventListener('keydown', (event) => {
+    if (!isGMGNPage() || !settingsReady || !enabled || !masterEnabled || opening
+        || event.code !== 'KeyC' || event.repeat || event.isComposing || event.keyCode === 229
+        || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey
+        || event.composedPath().some(isEditing) || isEditing(document.activeElement)) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    opening = true;
+    Promise.resolve().then(() => chrome.runtime.sendMessage({ type: 'DSM_WALLET_OPEN_LATEST' }))
+      .catch(() => {}).finally(() => { opening = false; });
+  }, true);
+
   function enqueueRow(row) {
     if (!row || !caFromRow(row)) return;
     pendingRows.add(row);

@@ -72,11 +72,7 @@ function showWalletCopyStatus(message, active) {
 }
 
 let walletCopyToggleQueue = Promise.resolve();
-chrome.commands.onCommand.addListener((command) => {
-  // Keep the command ID so existing user shortcut bindings continue to work.
-  if (command !== 'toggle-wallet-copy') return;
-  walletCopyToggleQueue = walletCopyToggleQueue.then(async () => {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+async function openLatestWalletToken(tab) {
     if (!Number.isInteger(tab?.id)) return;
     let host;
     try { host = new URL(tab.url).hostname; } catch { return; }
@@ -93,6 +89,14 @@ chrome.commands.onCommand.addListener((command) => {
         args: [result?.reason || '请刷新 GMGN 页面后重试', false]
       });
     }
+}
+
+chrome.commands.onCommand.addListener((command) => {
+  // Keep the command ID so existing user shortcut bindings continue to work.
+  if (command !== 'toggle-wallet-copy') return;
+  walletCopyToggleQueue = walletCopyToggleQueue.then(async () => {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    await openLatestWalletToken(tab);
   }).catch((error) => {
     appendRuntimeLog({ level: 'error', category: 'K线跳转', title: '钱包快捷跳转失败', detail: String(error?.message || error) });
   });
@@ -1154,6 +1158,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // Messages explicitly targeted at the offscreen document must not be answered
   // by the service worker; otherwise the caller can receive the wrong responder.
   if (message.target === 'offscreen') return;
+
+  if (message.type === 'DSM_WALLET_OPEN_LATEST') {
+    openLatestWalletToken(sender.tab).then(() => sendResponse({ ok: true }))
+      .catch(() => sendResponse({ ok: false }));
+    return true;
+  }
 
   if (message.type === 'DSM_DEV_ARKM_SEARCH') {
     const address = String(message.address || '').trim();

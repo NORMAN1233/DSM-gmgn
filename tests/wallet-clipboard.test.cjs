@@ -20,15 +20,16 @@ function deferred() {
   return { promise, resolve };
 }
 
-async function setup(t, { history = [], backend, settings } = {}) {
+async function setup(t, { history = [], backend, settings, url = 'https://gmgn.ai/sol' } = {}) {
   const dom = new JSDOM('<main id="tracker"></main>', {
-    url: 'https://gmgn.ai/sol', runScripts: 'outside-only'
+    url, runScripts: 'outside-only'
   });
   t.after(() => dom.window.close());
   const { window } = dom;
   const list = window.document.getElementById('tracker');
   const writes = [];
   const requests = [];
+  const opens = [];
   let settingsChanged;
   let messageListener;
   const row = (ca, side = 'Buy') => {
@@ -59,6 +60,7 @@ async function setup(t, { history = [], backend, settings } = {}) {
     runtime: {
       onMessage: { addListener: (listener) => { messageListener = listener; } },
       sendMessage: async (message) => {
+        if (message.type === 'DSM_WALLET_OPEN_LATEST') { opens.push(message); return { ok: true }; }
         assert.equal(message.type, 'DSM_WALLET_COPY_CA');
         requests.push(message.ca);
         const ok = await backend(message.ca, requests.length);
@@ -70,7 +72,7 @@ async function setup(t, { history = [], backend, settings } = {}) {
   window.eval(source);
   await flush();
   return {
-    window, list, row, writes, requests,
+    window, list, row, writes, requests, opens,
     latest: () => { let response; messageListener({ type: 'DSM_WALLET_LATEST_TOKEN' }, {}, (value) => { response = value; }); return response; },
     enable: (value) => settingsChanged({
       dsmSetting_officialWalletCopyEnabled: { newValue: value }
@@ -92,6 +94,51 @@ test('history is ignored; latest new cross-chain notification retains its real U
   assert.equal(h.latest().url, `https://gmgn.ai/robinhood/token/${RH}`);
   assert.deepEqual(h.writes, []);
   assert.deepEqual(h.requests, []);
+});
+
+function press(h, options = {}, target = h.window.document.body) {
+  const event = new h.window.KeyboardEvent('keydown', {
+    code: 'KeyC', key: 'c', bubbles: true, cancelable: true, composed: true, ...options
+  });
+  target.dispatchEvent(event);
+  return event;
+}
+
+test('single C requests navigation without clipboard access', async (t) => {
+  const h = await setup(t);
+  h.list.prepend(h.row(SOL));
+  await flush();
+  assert.equal(press(h).defaultPrevented, true);
+  await flush();
+  assert.equal(h.opens.length, 1);
+  assert.deepEqual(h.writes, []);
+});
+
+test('typing, composition, modifier keys, repeats and disabled mode do not navigate', async (t) => {
+  const h = await setup(t);
+  for (const options of [{ ctrlKey: true }, { metaKey: true }, { altKey: true }, { shiftKey: true },
+    { repeat: true }, { isComposing: true }, { keyCode: 229 }, { code: 'KeyX' }]) {
+    assert.equal(press(h, options).defaultPrevented, false);
+  }
+  for (const html of ['<input>', '<textarea></textarea>', '<select></select>',
+    '<div contenteditable="true"><span>text</span></div>', '<div role="textbox"></div>']) {
+    const host = h.window.document.createElement('div');
+    host.innerHTML = html;
+    h.window.document.body.append(host);
+    assert.equal(press(h, {}, host.querySelector('span') || host.firstChild).defaultPrevented, false);
+    host.remove();
+  }
+  h.enable(false);
+  assert.equal(press(h).defaultPrevented, false);
+  await flush();
+  assert.equal(h.opens.length, 0);
+});
+
+test('C is not intercepted on Axiom', async (t) => {
+  const h = await setup(t, { url: 'https://axiom.trade' });
+  assert.equal(press(h).defaultPrevented, false);
+  await flush();
+  assert.equal(h.opens.length, 0);
 });
 
 test('mixed batches retain the topmost notification and virtualized nodes update', async (t) => {
