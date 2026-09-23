@@ -73,31 +73,28 @@ function showWalletCopyStatus(message, active) {
 
 let walletCopyToggleQueue = Promise.resolve();
 chrome.commands.onCommand.addListener((command) => {
+  // Keep the command ID so existing user shortcut bindings continue to work.
   if (command !== 'toggle-wallet-copy') return;
   walletCopyToggleQueue = walletCopyToggleQueue.then(async () => {
-    const key = 'dsmSetting_officialWalletCopyEnabled';
-    const data = await chrome.storage.local.get([key, 'dsmSetting_dsmEnabled', 'dsmSettings']);
-    const enabled = !(data[key] ?? data.dsmSettings?.officialWalletCopyEnabled ?? true);
-    const masterOn = data.dsmSetting_dsmEnabled ?? data.dsmSettings?.dsmEnabled ?? true;
-    await chrome.storage.local.set({ [key]: enabled });
-    const text = `自动复制新消息 CA 已${enabled ? '开启' : '关闭'}${enabled && !masterOn ? '（总开关已关闭，暂不生效）' : ''}`;
-    appendRuntimeLog({ level: 'info', category: '设置', title: text, detail: '快捷键切换' });
-    // System notifications are supplemental: unavailable/slow OS notifications
-    // must never prevent the page notice or block the next shortcut press.
-    Promise.resolve().then(() => chrome.notifications?.create('dsm-wallet-copy-status', {
-      type: 'basic', iconUrl: chrome.runtime.getURL('gmgn-logo.png'),
-      title: 'DSM · 自动复制新消息 CA', message: text,
-      priority: 2
-    })).catch(() => {});
-    const tabs = await chrome.tabs.query({ url: [...SUPPORTED_TAB_URLS, 'https://arkm.com/*', 'https://*.arkm.com/*'] });
-    const targets = tabs.filter((tab) => Number.isInteger(tab.id));
-    const results = await Promise.allSettled(targets.map((tab) => chrome.scripting.executeScript({
-      target: { tabId: tab.id }, func: showWalletCopyStatus, args: [text, enabled && masterOn]
-    })));
-    const failures = results.filter((result) => result.status === 'rejected');
-    if (failures.length) appendRuntimeLog({ level: 'warn', category: '设置', title: '快捷键提示未能显示在部分页面', detail: failures.map((result) => String(result.reason?.message || result.reason)).join('；') });
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!Number.isInteger(tab?.id)) return;
+    let host;
+    try { host = new URL(tab.url).hostname; } catch { return; }
+    if (!/(^|\.)gmgn\.ai$/i.test(host)) return;
+    const result = await sendTabMessage(tab.id, { type: 'DSM_WALLET_LATEST_TOKEN' });
+    if (result?.ok) {
+      const url = new URL(result.url);
+      if (url.protocol !== 'https:' || !/(^|\.)gmgn\.ai$/i.test(url.hostname)) return;
+      await chrome.tabs.update(tab.id, { url: url.href });
+      appendRuntimeLog({ level: 'success', category: 'K线跳转', title: '钱包通知 K 线已打开', detail: result.ca });
+    } else {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id }, func: showWalletCopyStatus,
+        args: [result?.reason || '请刷新 GMGN 页面后重试', false]
+      });
+    }
   }).catch((error) => {
-    appendRuntimeLog({ level: 'error', category: '设置', title: '自动复制快捷键处理失败', detail: String(error?.message || error) });
+    appendRuntimeLog({ level: 'error', category: 'K线跳转', title: '钱包快捷跳转失败', detail: String(error?.message || error) });
   });
 });
 

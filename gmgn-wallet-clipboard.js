@@ -3,7 +3,6 @@
 
   const SETTING_KEY = 'dsmSetting_officialWalletCopyEnabled';
   const MASTER_KEY = 'dsmSetting_dsmEnabled';
-  const RESULT_EVENT = 'dsm-gmgn-wallet-ca-copied';
 
   // GMGN 官方钱包追踪行的真实 DOM 标记（TrackerListItem.tsx）。
   const TRACKER_ROW_SELECTOR = [
@@ -13,7 +12,7 @@
   const TRACKER_SYMBOL_SELECTOR = '[data-testid="follow-tracking-row-symbol"]';
   const TOKEN_ROUTE_RE = /\/(?:token|pump|meme|coin|pair|pool)\/([^/?#]+)/i;
   const CA_RE = /^(?:0x[a-fA-F0-9]{40,128}|[1-9A-HJ-NP-Za-km-z]{32,44}|[EU]Q[A-Za-z0-9_-]{46})$/;
-  const COPY_TIMEOUT_MS = 600;
+
 
   let enabled = true;
   let masterEnabled = true;
@@ -22,12 +21,11 @@
   let observationRoot = null;
   let bodyReadyListener = false;
   let flushScheduled = false;
-  let copyGeneration = 0;
-  let copyQueue = Promise.resolve();
+  let latestToken = null;
   const changedSettings = new Set();
 
   const pendingRows = new Set();
-  const rowCopies = new WeakMap();
+  const rowTokens = new WeakMap();
 
   function isGMGNPage() {
     return /(^|\.)gmgn\.ai$/i.test(location.hostname || '');
@@ -110,67 +108,30 @@
     return fallback || row?.parentElement || null;
   }
 
-  async function copyToClipboard(value) {
-    // 同步路径先写入，避免等待异步 API 超时；保留用户原来的焦点和选区。
-    const focused = document.activeElement;
-    const selection = window.getSelection();
-    const ranges = [];
-    for (let i = 0; selection && i < selection.rangeCount; i += 1) ranges.push(selection.getRangeAt(i).cloneRange());
-    const area = document.createElement('textarea');
-    area.value = value;
-    area.setAttribute('readonly', '');
-    area.style.cssText = 'position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;opacity:0;pointer-events:none;';
-    (document.body || document.documentElement).appendChild(area);
-    area.focus?.();
-    area.select();
-    let copied = false;
-    try { copied = document.execCommand('copy'); } catch (error) {}
-    area.remove();
-    focused?.focus?.({ preventScroll: true });
-    if (selection && ranges.length) {
-      selection.removeAllRanges();
-      for (const range of ranges) selection.addRange(range);
-    }
-    if (copied) return true;
-    let timer;
-    try {
-      const deadline = Date.now() + COPY_TIMEOUT_MS;
-      const result = await Promise.race([
-        chrome.runtime.sendMessage({ type: 'DSM_WALLET_COPY_CA', ca: value, deadline }),
-        new Promise((resolve) => { timer = setTimeout(() => resolve({ ok: false }), COPY_TIMEOUT_MS); })
-      ]);
-      return result?.ok === true;
-    } catch (error) { return false; }
-    finally { clearTimeout(timer); }
-  }
-
   async function processRow(row, capturedHref = '') {
     if (!settingsReady || !enabled || !masterEnabled || !row) return;
     const href = capturedHref || String(row.getAttribute?.('href') || '');
     const ca = caFromHref(href);
     if (!ca) return;
-    // 官方追踪的 token 链接已足够确定 CA；不等待方向文字，也不漏掉卖出行。
+    let url;
+    try { url = new URL(href, location.href); } catch { return; }
+    if (url.protocol !== 'https:' || !/(^|\.)gmgn\.ai$/i.test(url.hostname)) return;
     const key = tokenKeyFromHref(href, ca);
-    const previous = rowCopies.get(row);
-    if (previous?.key === key && (previous.copied || previous.pending)) return;
-    // 保存本次预警快照。跨链切换或虚拟列表复用节点后，旧任务仍然有效。
-    const snapshot = { key, copied: false, pending: true };
-    rowCopies.set(row, snapshot);
-    const generation = copyGeneration;
-    copyQueue = copyQueue.catch(() => {}).then(async () => {
-      let copied = false;
-      // 队列串行执行，上一条完成重试后才轮到下一条，不会覆盖后到的 CA。
-      for (let attempt = 0; !copied && attempt < 3; attempt += 1) {
-        if (attempt) await new Promise((resolve) => setTimeout(resolve, 40));
-        if (generation !== copyGeneration || !enabled || !masterEnabled) return;
-        try { copied = await copyToClipboard(ca); } catch (error) {}
-      }
-      snapshot.copied = copied;
-      window.dispatchEvent(new CustomEvent(RESULT_EVENT, { detail: { ca, copied } }));
-    }).finally(() => {
-      snapshot.pending = false;
-    });
+    if (rowTokens.get(row)?.key === key) return;
+    rowTokens.set(row, { key });
+    latestToken = { ca, url: url.href };
   }
+
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message?.type !== 'DSM_WALLET_LATEST_TOKEN') return;
+    if (!settingsReady || !masterEnabled || !enabled) {
+      sendResponse({ ok: false, reason: '请先开启插件和钱包快捷跳转' });
+    } else if (!latestToken) {
+      sendResponse({ ok: false, reason: '尚未收到新的钱包通知，请等待新消息' });
+    } else {
+      sendResponse({ ok: true, ...latestToken });
+    }
+  });
 
   function enqueueRow(row) {
     if (!row || !caFromRow(row)) return;
@@ -182,7 +143,7 @@
       flushScheduled = false;
       const rows = Array.from(pendingRows);
       pendingRows.clear();
-      // GMGN 新记录在顶部：一批消息从旧到新写入，最终保留最上面的 CA。
+      // GMGN 新记录在顶部：从旧到新识别，最终保留最上面的详情链接。
       rows.sort((a, b) => a === b ? 0 : (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? 1 : -1));
       for (const candidate of rows) processRow(candidate).catch(() => {});
     });
@@ -206,12 +167,12 @@
     try {
       for (const row of root.querySelectorAll(TRACKER_ROW_SELECTOR)) {
         const ca = caFromRow(row);
-        if (ca) rowCopies.set(row, { key: tokenKeyFromRow(row, ca), copied: true, pending: false });
+        if (ca) rowTokens.set(row, { key: tokenKeyFromRow(row, ca) });
       }
       for (const symbol of root.querySelectorAll(TRACKER_SYMBOL_SELECTOR)) {
         const row = symbol.closest?.('a[href]');
         const ca = caFromRow(row);
-        if (row && ca) rowCopies.set(row, { key: tokenKeyFromRow(row, ca), copied: true, pending: false });
+        if (row && ca) rowTokens.set(row, { key: tokenKeyFromRow(row, ca) });
       }
     } catch (error) {}
   }
@@ -283,10 +244,10 @@
     observationRoot = null;
     pendingRows.clear();
     flushScheduled = false;
-    copyGeneration += 1;
+    latestToken = null;
   }
 
-  // Observe while settings load, retaining new rows without copying until authorized.
+  // Observe while settings load, retaining only new notifications.
   start();
   chrome.storage.local.get([MASTER_KEY, SETTING_KEY, 'dsmSettings']).then((data) => {
     if (!changedSettings.has(MASTER_KEY)) masterEnabled = (data[MASTER_KEY] ?? data.dsmSettings?.dsmEnabled) !== false;

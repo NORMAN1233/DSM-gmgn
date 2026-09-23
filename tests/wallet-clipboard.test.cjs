@@ -20,13 +20,6 @@ function deferred() {
   return { promise, resolve };
 }
 
-async function waitFor(check) {
-  for (let i = 0; i < 100 && !check(); i += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-  assert.ok(check(), 'clipboard work did not finish');
-}
-
 async function setup(t, { history = [], backend, settings } = {}) {
   const dom = new JSDOM('<main id="tracker"></main>', {
     url: 'https://gmgn.ai/sol', runScripts: 'outside-only'
@@ -37,6 +30,7 @@ async function setup(t, { history = [], backend, settings } = {}) {
   const writes = [];
   const requests = [];
   let settingsChanged;
+  let messageListener;
   const row = (ca, side = 'Buy') => {
     const anchor = window.document.createElement('a');
     anchor.setAttribute('data-sentry-component', 'TrackerListItem');
@@ -63,6 +57,7 @@ async function setup(t, { history = [], backend, settings } = {}) {
       onChanged: { addListener: (listener) => { settingsChanged = listener; } }
     },
     runtime: {
+      onMessage: { addListener: (listener) => { messageListener = listener; } },
       sendMessage: async (message) => {
         assert.equal(message.type, 'DSM_WALLET_COPY_CA');
         requests.push(message.ca);
@@ -76,163 +71,69 @@ async function setup(t, { history = [], backend, settings } = {}) {
   await flush();
   return {
     window, list, row, writes, requests,
+    latest: () => { let response; messageListener({ type: 'DSM_WALLET_LATEST_TOKEN' }, {}, (value) => { response = value; }); return response; },
     enable: (value) => settingsChanged({
       dsmSetting_officialWalletCopyEnabled: { newValue: value }
     }, 'local')
   };
 }
 
-test('existing history stays untouched; new SOL and robinhood rows copy their CA', async (t) => {
-  const h = await setup(t, { history: [RH_NEXT] });
-  assert.deepEqual(h.writes, []);
-  h.list.prepend(h.row(SOL));
+test('history is ignored; latest new cross-chain notification retains its real URL without copying', async (t) => {
+  const h = await setup(t, { history: [SOL] });
+  assert.equal(h.latest().ok, false);
+  h.list.prepend(h.row(SOL_NEXT));
   await flush();
-  h.list.prepend(h.row(RH));
-  await flush();
-  assert.deepEqual(h.writes, [SOL, RH]);
-});
-
-test('a captured robinhood alert still copies after its DOM node disappears', async (t) => {
-  const gate = deferred();
-  t.after(gate.resolve);
-  const h = await setup(t, { backend: async (_, n) => {
-    if (n === 1) await gate.promise;
-    return true;
-  } });
-  h.list.prepend(h.row(SOL));
-  await flush();
-  assert.deepEqual(h.requests, [SOL]);
+  assert.equal(h.latest().ca, SOL_NEXT);
   const next = h.row(RH);
   h.list.prepend(next);
   await flush();
   next.remove();
   await flush();
-  gate.resolve();
-  await flush();
-  assert.deepEqual(h.writes, [SOL, RH]);
-});
-
-test('reusing a queued node preserves both cross-chain alert snapshots', async (t) => {
-  const gate = deferred();
-  t.after(gate.resolve);
-  const h = await setup(t, { backend: async (_, n) => {
-    if (n === 1) await gate.promise;
-    return true;
-  } });
-  h.list.prepend(h.row(SOL));
-  await flush();
-  const reused = h.row(RH);
-  h.list.prepend(reused);
-  await flush();
-  reused.href = `/sol/token/${SOL_NEXT}`;
-  await flush();
-  gate.resolve();
-  await flush();
-  assert.deepEqual(h.writes, [SOL, RH, SOL_NEXT]);
-});
-
-test('A to B to A on one node copies the final A after an in-flight B', async (t) => {
-  const gate = deferred();
-  t.after(gate.resolve);
-  const h = await setup(t, { backend: async (_, n) => {
-    if (n === 2) await gate.promise;
-    return true;
-  } });
-  const reused = h.row(SOL);
-  h.list.prepend(reused);
-  await flush();
-  reused.href = `/robinhood/token/${RH}`;
-  await flush();
-  assert.deepEqual(h.requests, [SOL, RH]);
-  reused.href = `/sol/token/${SOL}`;
-  await flush();
-  gate.resolve();
-  await flush();
-  assert.deepEqual(h.writes, [SOL, RH, SOL]);
-});
-
-test('mixed batches copy oldest to newest and retain the top alert last', async (t) => {
-  const h = await setup(t);
-  h.list.append(h.row(RH_NEXT), h.row(SOL_NEXT), h.row(RH), h.row(SOL));
-  await flush();
-  assert.deepEqual(h.writes, [SOL, RH, SOL_NEXT, RH_NEXT]);
-});
-
-test('a filtered official row copies as soon as its CA arrives without waiting for side text', async (t) => {
-  const h = await setup(t);
-  const delayed = h.row(RH, '');
-  h.list.append(delayed);
-  await flush();
-  assert.deepEqual(h.writes, [RH]);
-  delayed.querySelector('[data-testid="follow-tracking-row-side"]').textContent = '买入';
-  await flush();
-  assert.deepEqual(h.writes, [RH]);
-});
-
-test('new rows arriving during settings load are copied, pre-existing rows are not', async (t) => {
-  const settings = deferred();
-  const h = await setup(t, { settings, history: [RH_NEXT] });
-  h.list.prepend(h.row(SOL));
-  await flush();
+  assert.equal(h.latest().url, `https://gmgn.ai/robinhood/token/${RH}`);
   assert.deepEqual(h.writes, []);
+  assert.deepEqual(h.requests, []);
+});
+
+test('mixed batches retain the topmost notification and virtualized nodes update', async (t) => {
+  const h = await setup(t);
+  const top = h.row(RH);
+  h.list.append(top, h.row(SOL));
+  await flush();
+  assert.equal(h.latest().ca, RH);
+  top.href = `/sol/token/${SOL_NEXT}`;
+  await flush();
+  assert.equal(h.latest().ca, SOL_NEXT);
+});
+
+test('settings initialization retains new notifications but ignores history', async (t) => {
+  const settings = deferred();
+  const h = await setup(t, { settings, history: [RH] });
+  h.list.prepend(h.row(SOL));
+  await flush();
+  assert.equal(h.latest().ok, false);
   settings.resolve({});
   await flush();
-  assert.deepEqual(h.writes, [SOL]);
+  assert.equal(h.latest().ca, SOL);
 });
 
-test('disabled settings discard rows collected during initialization', async (t) => {
-  const settings = deferred();
-  const h = await setup(t, { settings });
+test('disable clears snapshots; re-enable waits for a fresh notification', async (t) => {
+  const h = await setup(t);
   h.list.prepend(h.row(SOL));
-  await flush();
-  settings.resolve({ dsmSetting_officialWalletCopyEnabled: false });
-  await flush();
-  assert.deepEqual(h.writes, []);
-});
-
-test('a newer switch change wins over a stale settings read', async (t) => {
-  const settings = deferred();
-  const h = await setup(t, { settings });
-  h.enable(false);
-  settings.resolve({ dsmSetting_officialWalletCopyEnabled: true });
-  await flush();
-  h.list.prepend(h.row(SOL));
-  await flush();
-  assert.deepEqual(h.writes, []);
-});
-
-test('a missing backend response times out and retries without permanently blocking the next CA', async (t) => {
-  const h = await setup(t, { backend: async (_, n) => n === 1 ? new Promise(() => {}) : true });
-  h.list.prepend(h.row(SOL));
-  await flush();
-  h.list.prepend(h.row(RH));
-  await new Promise((resolve) => setTimeout(resolve, 700));
-  await waitFor(() => h.writes.includes(RH));
-  assert.deepEqual(h.writes, [SOL, RH]);
-});
-
-test('each alert retries a temporary failure even when another chain is queued', async (t) => {
-  const h = await setup(t, { backend: async (_, n) => n !== 1 });
-  h.list.append(h.row(RH), h.row(SOL));
-  await waitFor(() => h.writes.includes(RH));
-  assert.deepEqual(h.requests, [SOL, SOL, RH]);
-  assert.deepEqual(h.writes, [SOL, RH]);
-});
-
-test('turning copying off and back on cancels previously queued alerts', async (t) => {
-  const gate = deferred();
-  t.after(gate.resolve);
-  const h = await setup(t, { backend: async (_, n) => {
-    if (n === 1) await gate.promise;
-    return true;
-  } });
-  h.list.prepend(h.row(SOL));
-  await flush();
-  h.list.prepend(h.row(RH));
   await flush();
   h.enable(false);
+  assert.equal(h.latest().ok, false);
   h.enable(true);
-  gate.resolve();
+  assert.equal(h.latest().ok, false);
+  h.list.prepend(h.row(RH));
   await flush();
-  assert.deepEqual(h.writes, [SOL]);
+  assert.equal(h.latest().ca, RH);
+});
+
+test('foreign token links cannot become navigation targets', async (t) => {
+  const h = await setup(t);
+  const invalid = h.row(SOL);
+  invalid.href = `https://evil.example/sol/token/${SOL}`;
+  h.list.prepend(invalid);
+  await flush();
+  assert.equal(h.latest().ok, false);
 });

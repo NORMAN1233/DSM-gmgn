@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "DSM-gmgn",
-  "version": "2.10.4",
+  "version": "2.11.0",
   "description": "GMGN + Axiom 交易辅助：已看 CA、跨屏搜索、5 秒决策，以及 GMGN 推特监控播报。",
   "permissions": [
     "storage",
@@ -80,7 +80,7 @@
   },
   "commands": {
     "toggle-wallet-copy": {
-      "description": "开启 / 关闭自动复制新消息 CA"
+      "description": "打开最新钱包通知的 K 线"
     }
   }
 }
