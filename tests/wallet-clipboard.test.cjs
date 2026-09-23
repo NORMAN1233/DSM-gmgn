@@ -54,6 +54,10 @@ async function setup(t, { history = [], backend, settings, url = 'https://gmgn.a
     direction.setAttribute('data-testid', 'follow-tracking-row-side');
     direction.textContent = side;
     anchor.append(symbol, direction);
+    anchor.getBoundingClientRect = () => {
+      const top = Math.max(0, Array.from(anchor.parentElement?.children || []).indexOf(anchor)) * 30;
+      return { top, bottom: top + 30, left: 0, right: 200, width: 200, height: 30 };
+    };
     return anchor;
   };
   for (const ca of history) list.append(row(ca));
@@ -129,7 +133,7 @@ test('single C synchronously clicks the latest actual row and bubbles to GMGN ha
   assert.deepEqual(h.writes, []);
 });
 
-test('removed or reused notifications never fall back to URL navigation or click another token', async (t) => {
+test('reused nodes click their current token immediately; removed nodes are never clicked', async (t) => {
   const h = await setup(t);
   const row = h.row(SOL);
   let clicks = 0;
@@ -138,14 +142,14 @@ test('removed or reused notifications never fall back to URL navigation or click
   await flush();
   row.href = `/robinhood/token/${RH}`;
   press(h);
-  assert.equal(clicks, 0);
+  assert.equal(clicks, 1);
   await flush();
   press(h);
-  assert.equal(clicks, 1);
+  assert.equal(clicks, 2);
   row.remove();
   press(h);
-  assert.equal(clicks, 1);
-  assert.match(h.window.document.getElementById('dsm-wallet-click-status').textContent, /消失或更新/);
+  assert.equal(clicks, 2);
+  assert.match(h.window.document.getElementById('dsm-wallet-click-status').textContent, /没有可见/);
   assert.equal(h.opens.length, 0);
 });
 
@@ -284,4 +288,57 @@ test('a late tracker marker is detected without text or class observation', asyn
   row.setAttribute('data-sentry-component', 'TrackerListItem');
   await flush();
   assert.equal(h.latest().ca, SOL);
+});
+
+test('a new row is clicked before any observer microtask runs', async (t) => {
+  const h = await setup(t, { history: [SOL] });
+  const clicked = [];
+  h.list.addEventListener('click', (e) => { e.preventDefault(); clicked.push(e.target); });
+  const next = h.row(RH);
+  h.list.prepend(next);
+  press(h);
+  assert.deepEqual(clicked, [next]);
+});
+
+test('rapid list replacement resolves each current row without stale-cache misses', async (t) => {
+  const h = await setup(t);
+  const clicked = [];
+  h.list.addEventListener('click', (e) => { e.preventDefault(); clicked.push(e.target); });
+  for (let i = 0; i < 200; i += 1) {
+    const current = h.row(i % 2 ? SOL : RH);
+    h.list.replaceChildren(current);
+    press(h);
+    assert.equal(clicked[i], current);
+  }
+  assert.equal(clicked.length, 200);
+  assert.deepEqual(h.opens, []);
+});
+
+test('visual order wins over DOM order and hidden or clipped rows are skipped', async (t) => {
+  const h = await setup(t);
+  const hidden = h.row(SOL), lower = h.row(RH), upper = h.row(SOL_NEXT);
+  hidden.style.display = 'none';
+  lower.getBoundingClientRect = () => ({ top: 100, bottom: 130, left: 0, right: 200, width: 200, height: 30 });
+  upper.getBoundingClientRect = () => ({ top: 40, bottom: 70, left: 0, right: 200, width: 200, height: 30 });
+  const clip = h.window.document.createElement('div');
+  clip.style.overflowY = 'hidden';
+  clip.getBoundingClientRect = () => ({ top: 200, bottom: 300, left: 0, right: 200, width: 200, height: 100 });
+  clip.append(h.row(RH_NEXT));
+  h.list.append(hidden, lower, upper, clip);
+  const clicked = [];
+  h.list.addEventListener('click', (e) => { e.preventDefault(); clicked.push(e.target); });
+  press(h);
+  assert.deepEqual(clicked, [upper]);
+});
+
+test('already-rendered history can be clicked immediately after enabling', async (t) => {
+  const h = await setup(t, { history: [SOL] });
+  const clicked = [];
+  h.list.addEventListener('click', (e) => { e.preventDefault(); clicked.push(e.target); });
+  h.enable(false);
+  press(h);
+  assert.equal(clicked.length, 0);
+  h.enable(true);
+  press(h);
+  assert.deepEqual(clicked, [h.list.firstChild]);
 });

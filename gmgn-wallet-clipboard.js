@@ -95,16 +95,52 @@
     latestToken = { ca, url: url.href, row };
   }
 
+  function currentVisibleNotification() {
+    const candidates = document.querySelectorAll(`${TRACKER_ROW_SELECTOR},${TRACKER_SYMBOL_SELECTOR}`);
+    const seen = new Set();
+    let best = null;
+    for (const node of candidates) {
+      const row = rowFromNode(node);
+      if (!row || seen.has(row) || !row.isConnected) continue;
+      seen.add(row);
+      const ca = caFromRow(row);
+      let url;
+      try { url = new URL(row.href); } catch { continue; }
+      if (!ca || url.protocol !== 'https:' || !/(^|\.)gmgn\.ai$/i.test(url.hostname)) continue;
+      if (row.checkVisibility && !row.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) continue;
+      const rect = row.getBoundingClientRect();
+      let top = Math.max(0, rect.top), bottom = Math.min(innerHeight, rect.bottom);
+      let left = Math.max(0, rect.left), right = Math.min(innerWidth, rect.right);
+      if (rect.width <= 0 || rect.height <= 0 || bottom <= top || right <= left) continue;
+      let hidden = false;
+      for (let parent = row; parent; parent = parent.parentElement) {
+        const style = getComputedStyle(parent);
+        if (parent.hidden || parent.getAttribute('aria-hidden') === 'true'
+            || style.display === 'none' || style.visibility === 'hidden'
+            || style.visibility === 'collapse' || style.opacity === '0') { hidden = true; break; }
+        if (parent === row) continue;
+        const clipsY = /^(auto|scroll|hidden|clip)$/.test(style.overflowY);
+        const clipsX = /^(auto|scroll|hidden|clip)$/.test(style.overflowX);
+        if (clipsY || clipsX) {
+          const bounds = parent.getBoundingClientRect();
+          if (clipsY) { top = Math.max(top, bounds.top); bottom = Math.min(bottom, bounds.bottom); }
+          if (clipsX) { left = Math.max(left, bounds.left); right = Math.min(right, bounds.right); }
+        }
+      }
+      if (hidden || bottom <= top || right <= left) continue;
+      if (!best || top < best.top) best = { row, ca, top };
+    }
+    return best;
+  }
+
   function clickLatestNotification() {
     if (!isGMGNPage() || !settingsReady || !masterEnabled || !enabled) {
       return { ok: false, reason: '请先开启插件和钱包快捷跳转' };
     }
-    if (!latestToken) return { ok: false, reason: '尚未收到新的钱包通知，请等待新消息' };
-    const { row, ca, url } = latestToken;
-    // Only activate the actual captured notification, never navigate a saved URL.
-    if (!row?.isConnected || row.href !== url || !rowFromNode(row)) {
-      return { ok: false, reason: '最新钱包通知已消失或更新，请等待新消息' };
-    }
+    // Resolve and click in the same key event, without waiting for observers or a worker.
+    const target = currentVisibleNotification();
+    if (!target) return { ok: false, reason: '当前没有可见的钱包通知，请展开钱包监控' };
+    const { row, ca } = target;
     try {
       row.click();
       const notice = document.getElementById('dsm-wallet-click-status');
