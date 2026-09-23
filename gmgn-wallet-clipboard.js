@@ -18,7 +18,6 @@
   let masterEnabled = true;
   let settingsReady = false;
   let observer = null;
-  let observationRoot = null;
   let bodyReadyListener = false;
   let flushScheduled = false;
   let latestToken = null;
@@ -82,35 +81,9 @@
     return fallback && caFromRow(fallback) ? fallback : null;
   }
 
-  function firstRowIn(root) {
-    if (!root) return null;
-    const direct = rowFromNode(root);
-    if (direct) return direct;
-    try {
-      const row = root.querySelector?.(TRACKER_ROW_SELECTOR);
-      if (row && caFromRow(row)) return row;
-      const symbol = root.querySelector?.(TRACKER_SYMBOL_SELECTOR);
-      const fallback = symbol?.closest?.('a[href]');
-      return fallback && caFromRow(fallback) ? fallback : null;
-    } catch (error) {
-      return null;
-    }
-  }
-
-  function trackerListRoot(row) {
-    let current = row?.parentElement;
-    const fallback = current;
-    for (let depth = 0; current && current !== document.body && depth < 5; depth += 1, current = current.parentElement) {
-      try {
-        if (current.querySelectorAll(TRACKER_ROW_SELECTOR).length > 1) return current;
-      } catch (error) {}
-    }
-    return fallback || row?.parentElement || null;
-  }
-
-  async function processRow(row, capturedHref = '') {
-    if (!settingsReady || !enabled || !masterEnabled || !row) return;
-    const href = capturedHref || String(row.getAttribute?.('href') || '');
+  function processRow(row) {
+    if (!settingsReady || !enabled || !masterEnabled || !row?.isConnected) return;
+    const href = String(row.getAttribute?.('href') || '');
     const ca = caFromHref(href);
     if (!ca) return;
     let url;
@@ -129,11 +102,13 @@
     if (!latestToken) return { ok: false, reason: '尚未收到新的钱包通知，请等待新消息' };
     const { row, ca, url } = latestToken;
     // Only activate the actual captured notification, never navigate a saved URL.
-    if (!row.isConnected || row.href !== url) {
+    if (!row?.isConnected || row.href !== url || !rowFromNode(row)) {
       return { ok: false, reason: '最新钱包通知已消失或更新，请等待新消息' };
     }
     try {
       row.click();
+      const notice = document.getElementById('dsm-wallet-click-status');
+      if (notice) { clearTimeout(notice.hideTimer); notice.remove(); }
       return { ok: true, ca };
     } catch {
       return { ok: false, reason: '钱包通知点击失败，请重试' };
@@ -201,12 +176,13 @@
       pendingRows.clear();
       // GMGN 新记录在顶部：从旧到新识别，最终保留最上面的详情链接。
       rows.sort((a, b) => a === b ? 0 : (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? 1 : -1));
-      for (const candidate of rows) processRow(candidate).catch(() => {});
+      for (const candidate of rows) processRow(candidate);
     });
   }
 
   function collectRows(node, rows) {
-    const element = node?.nodeType === 1 ? node : node?.parentElement;
+    // Text updates cannot introduce tracker rows; avoid scanning their parents.
+    const element = node?.nodeType === 1 ? node : null;
     if (!element) return;
     const direct = rowFromNode(element);
     if (direct) rows.add(direct);
@@ -233,25 +209,14 @@
     } catch (error) {}
   }
 
-  function attachToTracker(row) {
-    const root = row ? trackerListRoot(row) : null;
+  function attachToTracker() {
     observer?.disconnect();
-    observationRoot = root;
     seedExistingRows(document.body);
     observer = new MutationObserver((mutations) => {
       const addedRows = new Set();
       const changedRows = new Set();
       for (const mutation of mutations) {
-        if (mutation.type === 'attributes' && mutation.attributeName === 'href') {
-          const changed = rowFromNode(mutation.target);
-          if (changed) {
-            // href 可能在同一 MutationObserver 批次内连续改写；oldValue 是中间预警的唯一快照。
-            if (settingsReady && mutation.oldValue && caFromHref(mutation.oldValue)) {
-              processRow(changed, mutation.oldValue).catch(() => {});
-            }
-            changedRows.add(changed);
-          }
-        } else if (mutation.type === 'attributes' || mutation.type === 'characterData' || mutation.type === 'childList') {
+        if (mutation.type === 'attributes') {
           const changed = rowFromNode(mutation.target);
           if (changed) changedRows.add(changed);
         }
@@ -260,19 +225,16 @@
       // 重建列表也可能夹带新交易，按从旧到新的顺序处理，不能整批标记已读。
       for (const row of addedRows) enqueueRow(row);
       for (const row of changedRows) enqueueRow(row);
-      if (!observationRoot?.isConnected) {
-        const current = Array.from(addedRows).find((candidate) => candidate.isConnected);
-        observationRoot = current ? trackerListRoot(current) : null;
-      }
+      // Do not retain detached lists through the last notification reference.
+      if (latestToken?.row && !latestToken.row.isConnected) latestToken.row = null;
+      for (const row of pendingRows) if (!row.isConnected) pendingRows.delete(row);
     });
     // 连续接收新增节点，不再通过 1 秒轮询恢复监听；只解析官方追踪行。
     observer.observe(document.body, {
       childList: true,
       subtree: true,
-      characterData: true,
       attributes: true,
-      attributeFilter: ['href', 'class', 'data-testid', 'data-sentry-component', 'data-sentry-source-file'],
-      attributeOldValue: true
+      attributeFilter: ['href', 'data-testid', 'data-sentry-component', 'data-sentry-source-file']
     });
     return true;
   }
@@ -290,17 +252,17 @@
       return;
     }
 
-    const row = firstRowIn(document.body);
-    attachToTracker(row);
+    attachToTracker();
   }
 
   function stop() {
     observer?.disconnect();
     observer = null;
-    observationRoot = null;
     pendingRows.clear();
     flushScheduled = false;
     latestToken = null;
+    const notice = document.getElementById('dsm-wallet-click-status');
+    if (notice) { clearTimeout(notice.hideTimer); notice.remove(); }
   }
 
   // Observe while settings load, retaining only new notifications.

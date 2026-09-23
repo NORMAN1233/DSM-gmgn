@@ -30,6 +30,17 @@ async function setup(t, { history = [], backend, settings, url = 'https://gmgn.a
   const writes = [];
   const requests = [];
   const opens = [];
+  const observed = { callbacks: 0, records: 0 };
+  const NativeObserver = window.MutationObserver;
+  window.MutationObserver = class extends NativeObserver {
+    constructor(callback) {
+      super((records, observer) => {
+        observed.callbacks += 1;
+        observed.records += records.length;
+        callback(records, observer);
+      });
+    }
+  };
   let settingsChanged;
   let messageListener;
   const row = (ca, side = 'Buy') => {
@@ -72,7 +83,7 @@ async function setup(t, { history = [], backend, settings, url = 'https://gmgn.a
   window.eval(source);
   await flush();
   return {
-    window, list, row, writes, requests, opens,
+    window, list, row, writes, requests, opens, observed,
     latest: () => { let response; messageListener({ type: 'DSM_WALLET_LATEST_TOKEN' }, {}, (value) => { response = value; }); return response; },
     enable: (value) => settingsChanged({
       dsmSetting_officialWalletCopyEnabled: { newValue: value }
@@ -218,4 +229,59 @@ test('foreign token links cannot become navigation targets', async (t) => {
   h.list.prepend(invalid);
   await flush();
   assert.equal(h.latest().ok, false);
+});
+
+test('high-frequency class and text updates do not wake the wallet observer', async (t) => {
+  const h = await setup(t);
+  const ticker = h.window.document.createElement('div');
+  ticker.textContent = 'price';
+  h.window.document.body.append(ticker);
+  await flush();
+  const before = h.observed.records;
+  for (let i = 0; i < 1000; i += 1) {
+    ticker.className = `price-${i}`;
+    ticker.firstChild.data = String(i);
+  }
+  await flush();
+  assert.equal(h.observed.records, before);
+});
+
+test('an older row changing A to B to A in one batch cannot replace the latest notification', async (t) => {
+  const h = await setup(t);
+  const older = h.row(SOL);
+  h.list.append(older);
+  await flush();
+  h.list.prepend(h.row(RH));
+  await flush();
+  older.href = `/sol/token/${SOL_NEXT}`;
+  older.href = `/sol/token/${SOL}`;
+  await flush();
+  assert.equal(h.latest().ca, RH);
+});
+
+test('a transient detached row cannot displace a live notification', async (t) => {
+  const h = await setup(t);
+  const live = h.row(SOL);
+  const clicks = [];
+  h.list.addEventListener('click', (event) => { clicks.push(event.target); event.preventDefault(); });
+  h.list.append(live);
+  await flush();
+  const transient = h.row(RH);
+  h.list.prepend(transient);
+  transient.remove();
+  await flush();
+  press(h);
+  assert.deepEqual(clicks, [live]);
+});
+
+test('a late tracker marker is detected without text or class observation', async (t) => {
+  const h = await setup(t);
+  const row = h.window.document.createElement('a');
+  row.href = `/sol/token/${SOL}`;
+  h.list.append(row);
+  await flush();
+  assert.equal(h.latest().ok, false);
+  row.setAttribute('data-sentry-component', 'TrackerListItem');
+  await flush();
+  assert.equal(h.latest().ca, SOL);
 });
