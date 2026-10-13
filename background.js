@@ -1158,10 +1158,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === 'DSM_DEV_ARKM_SEARCH') {
     const address = String(message.address || '').trim();
+    const tokenCA = String(message.tokenCA || '').trim();
+    const normalizeAddress = (value) => /^0x/i.test(value) ? value.toLowerCase() : value;
     if (!/^https:\/\/(?:[a-z0-9-]+\.)*gmgn\.ai\//i.test(sender.url || '') ||
         !Number.isInteger(sender.tab?.id) ||
         !/^(?:0x[a-fA-F0-9]{40}|[1-9A-HJ-NP-Za-km-z]{32,44})$/.test(address)) {
       sendResponse({ ok: false, reason: '无效的 Dev 地址或来源' });
+      return;
+    }
+    let sourceTokenCA = tokenCA;
+    if (!sourceTokenCA) {
+      try {
+        sourceTokenCA = new URL(sender.url).pathname.match(/\/(?:token|pump|t|meme|trade)\/(0x[a-fA-F0-9]{40}|[1-9A-HJ-NP-Za-km-z]{32,44})(?=\/|$)/i)?.[1] || '';
+      } catch (error) { /* the sender URL was validated above */ }
+    }
+    if (sourceTokenCA && normalizeAddress(address) === normalizeAddress(sourceTokenCA)) {
+      sendResponse({ ok: false, reason: '识别到的是当前代币 CA，已取消查询，请检查 Dev 钱包地址' });
       return;
     }
     (async () => {
@@ -1169,14 +1181,170 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const master = data.dsmSetting_dsmEnabled ?? data.dsmSettings?.dsmEnabled ?? true;
       const enabled = data.dsmSetting_devArkmEnabled ?? data.dsmSettings?.devArkmEnabled ?? false;
       if (!master || !enabled) return { ok: false, reason: 'Dev ARKM 查询开关已关闭' };
-      const tabs = await chrome.tabs.query({ url: ['https://arkm.com/*', 'https://*.arkm.com/*'] });
-      // Prefer an existing explorer, then the most recently accessed ARKM tab.
-      tabs.sort((a, b) => Number(/\/explorer(?:\/|$)/.test(b.url || '')) - Number(/\/explorer(?:\/|$)/.test(a.url || '')) ||
-        (b.lastAccessed || 0) - (a.lastAccessed || 0));
+      const tabs = await chrome.tabs.query({ url: [
+        'https://arkm.com/*', 'https://*.arkm.com/*', 'https://platform.arkhamintelligence.com/*'
+      ] });
+      // Prefer the Arkham tab the user touched most recently. `active` is true
+      // once per window, so ranking it first can pick an older side-monitor tab
+      // over a newly opened Arkham tab in another window.
+      tabs.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0) ||
+        Number(!!b.active) - Number(!!a.active) || (b.id || 0) - (a.id || 0));
       const target = tabs.find((tab) => Number.isInteger(tab.id));
       if (!target) return { ok: false, reason: '请先打开 ARKM 页面' };
-      await chrome.tabs.update(target.id, { url: `https://arkm.com/explorer/address/${encodeURIComponent(address)}` });
-      return { ok: true, targetTabId: target.id };
+      const focusedWindow = await chrome.windows.getLastFocused();
+      if (target.windowId !== focusedWindow.id) await chrome.windows.update(target.windowId, { focused: true });
+      await chrome.tabs.update(target.id, { active: true });
+      const [{ result }] = await chrome.scripting.executeScript({
+        target: { tabId: target.id },
+        world: 'MAIN',
+        args: [address],
+        func: async (walletAddress) => {
+          const normalizeAddress = (value) => /^0x/i.test(value) ? value.toLowerCase() : value;
+          const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+          const addressFromPath = (pathname) => {
+            const match = pathname.match(/^\/explorer\/address\/(.+)$/i);
+            if (!match) return '';
+            return match[1].split('/').map((part) => {
+              try { return decodeURIComponent(part); } catch (error) { return part; }
+            }).find((part) => normalizeAddress(part) === normalizeAddress(walletAddress)) || '';
+          };
+          const visible = (element) => {
+            if (!element?.isConnected) return false;
+            const style = getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return rect.width > 20 && rect.height > 0 && style.visibility !== 'hidden' &&
+              style.display !== 'none' && Number(style.opacity || 1) !== 0;
+          };
+          const pageShowsAddress = () => {
+            const includesAddress = (value) => /^0x/i.test(walletAddress)
+              ? String(value || '').toLowerCase().includes(walletAddress.toLowerCase())
+              : String(value || '').includes(walletAddress);
+            const searchOverlay = (element) => element.closest(
+              'input, textarea, [role="option"], [role="listbox"], [role="combobox"], [role="dialog"], [aria-modal="true"], [class*="suggest" i], [data-testid*="suggest" i]'
+            );
+            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+            while (walker.nextNode()) {
+              const element = walker.currentNode.parentElement;
+              if (element && includesAddress(walker.currentNode.nodeValue) && !searchOverlay(element) && visible(element)) return true;
+            }
+            for (const element of document.querySelectorAll('[title], [aria-label], [data-address], [data-wallet-address]')) {
+              if (searchOverlay(element) || !visible(element)) continue;
+              if ([element.title, element.getAttribute('aria-label'), element.getAttribute('data-address'),
+                element.getAttribute('data-wallet-address')].some(includesAddress)) return true;
+            }
+            return false;
+          };
+          const isAddressPage = () => normalizeAddress(addressFromPath(location.pathname)) === normalizeAddress(walletAddress) && pageShowsAddress();
+          if (isAddressPage()) return { ok: true, url: location.href };
+
+          const searchText = /search|address|entity|token|搜索|地址|实体/i;
+          const findSearchInput = () => [...document.querySelectorAll('input:not([type="hidden"]), textarea')]
+            .filter((element) => !element.disabled && visible(element) && searchText.test(
+              `${element.getAttribute('placeholder') || ''} ${element.getAttribute('aria-label') || ''} ${element.getAttribute('name') || ''}`
+            ))
+            .sort((a, b) => Number(!!b.closest('[role="dialog"], [aria-modal="true"]')) - Number(!!a.closest('[role="dialog"], [aria-modal="true"]')) ||
+              a.getBoundingClientRect().top - b.getBoundingClientRect().top)[0] || null;
+          const activate = (element) => {
+            try { element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, composed: true, button: 0 })); } catch (error) {}
+            try { element.click(); } catch (error) {}
+          };
+          const homeLauncher = document.querySelector('#home-search-trigger');
+          let search = null;
+          if (homeLauncher && visible(homeLauncher)) {
+            activate(homeLauncher);
+            await wait(120);
+            search = findSearchInput();
+          }
+          if (!search) search = findSearchInput();
+          if (!search) {
+            const launcher = [...document.querySelectorAll('button, [role="button"]')].find((element) =>
+              visible(element) && searchText.test(`${element.getAttribute('aria-label') || ''} ${element.getAttribute('title') || ''} ${element.textContent || ''}`)
+            );
+            if (launcher) activate(launcher);
+            for (let i = 0; i < 60 && !search; i += 1) { await wait(50); search = findSearchInput(); }
+          }
+          if (!search) return { ok: false, reason: '未找到 ARKM 搜索框' };
+
+          try { search.focus({ preventScroll: true }); } catch (error) { search.focus(); }
+          const prototype = search instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+          const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+          const oldValue = search.value;
+          if (setter) setter.call(search, walletAddress);
+          else search.value = walletAddress;
+          try { search._valueTracker?.setValue?.(oldValue); } catch (error) {}
+          search.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: walletAddress }));
+          search.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+
+          const prefix = /^0x/i.test(walletAddress) ? walletAddress.slice(0, 8).toLowerCase() : walletAddress.slice(0, 5);
+          const searchRect = search.getBoundingClientRect();
+          const suggestionDeadline = Date.now() + 1300;
+          let result = null;
+          while (Date.now() < suggestionDeadline && !result) {
+            result = [...document.querySelectorAll('a[href*="/explorer/address/"]')].find((element) => {
+              if (!visible(element)) return false;
+              try { return normalizeAddress(addressFromPath(new URL(element.href, location.href).pathname)) === normalizeAddress(walletAddress); }
+              catch (error) { return false; }
+            });
+            if (!result) result = [...document.querySelectorAll('a, [role="option"], button, [role="button"], li')]
+              .filter((element) => {
+                if (!visible(element)) return false;
+                const text = `${element.textContent || ''} ${element.getAttribute('aria-label') || ''} ${element.getAttribute('title') || ''}`;
+                const matchesPrefix = /^0x/i.test(walletAddress)
+                  ? text.toLowerCase().includes(prefix)
+                  : text.includes(prefix);
+                if (!matchesPrefix) return false;
+                const rect = element.getBoundingClientRect();
+                return rect.top >= searchRect.bottom - 4 && rect.top < searchRect.bottom + 450 &&
+                  rect.right >= searchRect.left - 100 && rect.left <= searchRect.right + 100;
+              })
+              .sort((a, b) => a.getBoundingClientRect().width * a.getBoundingClientRect().height -
+                b.getBoundingClientRect().width * b.getBoundingClientRect().height)[0] || null;
+            if (!result) await wait(50);
+          }
+          let matchingSuggestion = false;
+          if (!result) {
+            matchingSuggestion = [...document.querySelectorAll('body *')].some((element) => {
+              if (element.children.length || !visible(element)) return false;
+              const text = String(element.textContent || '');
+              if (/^0x/i.test(walletAddress) ? !text.toLowerCase().includes(prefix) : !text.includes(prefix)) return false;
+              const rect = element.getBoundingClientRect();
+              return rect.top >= searchRect.bottom - 4 && rect.top < searchRect.bottom + 450 &&
+                rect.right >= searchRect.left - 100 && rect.left <= searchRect.right + 100;
+            });
+            // A suggestion row is optional. Arkham sometimes accepts a pasted
+            // address without returning a dropdown result, so submit the exact
+            // input instead of reporting a false "no corresponding address".
+            const keys = matchingSuggestion ? [['ArrowDown', 40], ['Enter', 13]] : [['Enter', 13]];
+            for (const [key, code] of keys) {
+              search.dispatchEvent(new KeyboardEvent('keydown', { key, code: key, keyCode: code, which: code, bubbles: true, composed: true }));
+              search.dispatchEvent(new KeyboardEvent('keyup', { key, code: key, keyCode: code, which: code, bubbles: true, composed: true }));
+            }
+          }
+
+          if (result) activate(result);
+          const routeDeadline = Date.now() + 6000;
+          const directRouteAt = Date.now() + 1200;
+          let directRouteRequested = false;
+          while (Date.now() < routeDeadline) {
+            if (isAddressPage()) {
+              return { ok: true, url: location.href };
+            }
+            if (!result && !directRouteRequested && Date.now() >= directRouteAt) {
+              // If Arkham did not handle Enter, use its address detail route in
+              // the existing SPA tab. This avoids depending on search-index
+              // suggestions and avoids a full page reload.
+              directRouteRequested = true;
+              const path = `/explorer/address/${encodeURIComponent(walletAddress)}`;
+              history.pushState({}, '', path);
+              dispatchEvent(new PopStateEvent('popstate', { state: history.state }));
+            }
+            await wait(100);
+          }
+          return { ok: false, reason: 'ARKM 已提交地址，但详情页未确认显示该 Dev 地址' };
+        }
+      });
+      if (!result?.ok) return { ok: false, reason: result?.reason || 'ARKM 查询失败' };
+      return { ok: true, targetTabId: target.id, targetUrl: result.url };
     })().then(sendResponse).catch((error) => sendResponse({ ok: false, reason: String(error?.message || error) }));
     return true;
   }
