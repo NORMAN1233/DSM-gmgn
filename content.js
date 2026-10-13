@@ -1780,7 +1780,6 @@
   let devLookupSequence = 0;
   let devQueryInFlightAddress = '';
   let queuedDevArkhamQuery = null;
-  let lastKnownDevAddress = null;
 
   function addressElementsInDevRow(root) {
     const addresses = new Map();
@@ -1857,7 +1856,6 @@
       if (!rowAddressCache.has(row)) rowAddressCache.set(row, addressElementsInDevRow(row));
       return rowAddressCache.get(row);
     };
-    let usedUnscopedSidebarFallback = false;
     for (const label of popupLabels) {
       let row = label;
       // The Dev metric and the wallet row are not always siblings: GMGN can
@@ -1932,14 +1930,12 @@
       if (panelAddresses.length) {
         const first = panelAddresses[0];
         addressDistances.set(first.address, Math.max(0, first.y - first.panelTop));
-        usedUnscopedSidebarFallback = true;
       }
     }
     const address = [...addressDistances].sort((a, b) => a[1] - b[1])[0]?.[0] || '';
     return {
       found: (mode === 'popup' ? popupLabels : orderedLabels).length > 0 || !!address,
-      address,
-      usedUnscopedSidebarFallback
+      address
     };
   }
 
@@ -2001,7 +1997,6 @@
     const readAfter = Date.now() + 100;
     const sidebarAfter = readAfter + 300;
     let sawPopup = false;
-    let ignoredStaleSidebar = false;
     let observer, debounce, timeout, initialCheck, sidebarCheck;
     function stop() {
       observer?.disconnect();
@@ -2022,15 +2017,6 @@
       const popup = findDevPopupAddress(referenceElement, mode, tokenCA);
       sawPopup ||= popup.found;
       if (!popup.address) return;
-      const addressKey = normalizeCA(popup.address);
-      const lastKnownAddress = normalizeCA(lastKnownDevAddress?.address);
-      // The unscoped drawer fallback must not reuse a different token's last
-      // known wallet; the popup path is already tied to this clicked marker.
-      if (popup.usedUnscopedSidebarFallback && lastKnownDevAddress?.tokenCA !== tokenCA && addressKey === lastKnownAddress) {
-        ignoredStaleSidebar = true;
-        return;
-      }
-      lastKnownDevAddress = { tokenCA, address: popup.address };
       stop();
       queryDevOnArkham(popup.address, sequence, tokenCA);
     }
@@ -2083,9 +2069,7 @@
     timeout = setTimeout(() => {
       stop();
       if (isMasterOn() && settings.devArkmEnabled && location.href === href) {
-        showSelectionRouteToast(ignoredStaleSidebar
-          ? '侧栏仍显示上一个钱包，未查询；请再次点击 Dev 标记'
-          : sawPopup
+        showSelectionRouteToast(sawPopup
           ? '未读取到完整 Dev 钱包地址；已停止查询，避免误查代币 CA'
           : '未检测到 Dev 钱包信息，请再次点击 Dev 标记重试', false, true);
       }
