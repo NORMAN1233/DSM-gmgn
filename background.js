@@ -22,6 +22,16 @@ const AXIOM_TAB_URLS = [
 ];
 const TOKEN_CA_RE = /^(?:0x[a-fA-F0-9]{40}|[1-9A-HJ-NP-Za-km-z]{32,44})$/;
 
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.tabs.query({ url: ['https://gmgn.ai/*', 'https://*.gmgn.ai/*'] }).then((tabs) => {
+    for (const tab of tabs) {
+      if (Number.isInteger(tab.id)) {
+        chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['gmgn-dev-arkm.js'] }).catch(() => {});
+      }
+    }
+  }).catch(() => {});
+});
+
 function normalizeTokenCA(value) {
   const ca = String(value || '').trim();
   if (!TOKEN_CA_RE.test(ca)) return '';
