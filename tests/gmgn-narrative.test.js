@@ -138,7 +138,9 @@ test('GMGN narrative recovers slow text and follows the visible token on navigat
   settings.aiNarrativeEnabled = true;
   location.pathname = '/sol/token/third';
   pointerOnIcon = true;
+  const beforeStationaryHover = hoverEvents.length;
   update();
+  assert.deepEqual(hoverEvents.slice(beforeStationaryHover), enter);
   assert.equal(drawings.at(-1).remove, true);
   pointerOnIcon = false;
   runTimer(2000);
@@ -231,7 +233,7 @@ test('retries an unreceived note and cached narrative when the drawing listener 
 
 test('automatic hover reaches the native wrapper and sends a positioned move', () => {
   const code = readFileSync(require.resolve('../content.js'), 'utf8');
-  const wrapper = { childElementCount: 1 };
+  const wrapper = { childElementCount: 2 };
   let open = false;
   let loaded = false;
   wrapper.dispatchEvent = event => { if (event.type === 'mouseenter') open = true; };

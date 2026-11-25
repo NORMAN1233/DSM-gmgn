@@ -2821,7 +2821,7 @@
     // Native enter/leave events are delivered independently to the SVG and
     // its wrapper. Dispatching enter only on the SVG skips wrapper listeners.
     for (let parent = icon.parentElement; parent && path.length < 4; parent = parent.parentElement) {
-      if (parent === document.body || parent.childElementCount !== 1) break;
+      if (parent === document.body || (path.length > 1 && parent.childElementCount !== 1)) break;
       path.push(parent);
     }
     send(icon, entering ? 'pointerover' : 'pointerout', true);
@@ -2860,6 +2860,7 @@
       }, delay);
     };
     if (icon.matches(':hover')) {
+      dispatchNarrativeHover(icon, true);
       retry();
       return;
     }
