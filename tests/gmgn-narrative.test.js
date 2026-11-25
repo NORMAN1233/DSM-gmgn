@@ -4,7 +4,7 @@ const { resolve } = require('node:path');
 const { test } = require('node:test');
 const { runInNewContext } = require('node:vm');
 
-test('GMGN narrative requests lazy text once per visit without loading another page', () => {
+test('GMGN narrative recovers slow text and follows the visible token on navigation', () => {
   const source = readFileSync(resolve(__dirname, '../content.js'), 'utf8');
   const narrative = source.slice(
     source.indexOf('  const AI_NARRATIVE_FOOTER'),
@@ -14,12 +14,16 @@ test('GMGN narrative requests lazy text once per visit without loading another p
   const location = { pathname: '/sol/token/first' };
   const settings = { dsmEnabled: true, aiNarrativeEnabled: true };
   let preview;
+  let name;
+  let iconVisible = true;
   let now = 0;
   const hoverEvents = [];
+  let pointerOnIcon = false;
   const icon = {
     isConnected: true,
     closest: () => null,
-    matches: () => false,
+    getClientRects: () => iconVisible ? [{}] : [],
+    matches: () => pointerOnIcon,
     getAttribute: () => null,
     dispatchEvent: event => hoverEvents.push(event.type)
   };
@@ -30,9 +34,17 @@ test('GMGN narrative requests lazy text once per visit without loading another p
   let queuedScan;
   let scheduledScans = 0;
   const listeners = new Map();
+  const timers = new Map();
+  let timerId = 0;
+  function runTimer(delay) {
+    const entry = [...timers].find(([, timer]) => timer.delay === delay);
+    assert.ok(entry, 'expected scheduled timer of ' + delay);
+    timers.delete(entry[0]);
+    entry[1].callback();
+  }
   const update = runInNewContext(narrative + '\nupdateAiNarrative;', {
     IS_GMGN: true,
-    TOKEN_ROUTE_RE: /\/token\//,
+    TOKEN_ROUTE_RE: /\/token\/([^/]+)/,
     X_PREVIEW_PANEL: '[role="tooltip"]',
     location,
     settings,
@@ -48,9 +60,10 @@ test('GMGN narrative requests lazy text once per visit without loading another p
     MouseEvent: HoverEvent,
     setTimeout: (callback, delay) => {
       if (delay === 0) { scheduledScans += 1; queuedScan = callback; }
-      return scheduledScans + 1;
+      timers.set(++timerId, { callback, delay });
+      return timerId;
     },
-    clearTimeout: () => {},
+    clearTimeout: id => timers.delete(id),
     MutationObserver: class {
       constructor(callback) { notify = callback; }
       observe() {}
@@ -62,13 +75,17 @@ test('GMGN narrative requests lazy text once per visit without loading another p
       createElement: tag => assert.fail(`narrative capture must not create a ${tag}`),
       visibilityState: 'visible',
       querySelectorAll(selector) {
-        if (selector.startsWith('[data-icon=')) return [icon];
-        return selector === '.narrative-tooltip' && preview ? [preview] : [];
+        if (selector.startsWith('[data-testid="token-detail-symbol"]')) return name ? [name] : [];
+        if (selector.startsWith('[data-icon=')) return [{getClientRects: () => []}, icon];
+        return selector === '.narrative-tooltip' && preview ? [
+          {textContent: 'Hidden stale text. Disclaimer: AI-generated', getClientRects: () => []},
+          preview
+        ] : [];
       }
     },
     window: {
       addEventListener: (type, listener) => listeners.set(type, listener),
-      dispatchEvent: event => drawings.push(event.detail)
+      dispatchEvent: event => { drawings.push(event.detail); event.defaultPrevented = true; }
     }
   });
 
@@ -81,8 +98,8 @@ test('GMGN narrative requests lazy text once per visit without loading another p
   assert.equal(listeners.has('keyup'), false);
   preview = {
     textContent: 'First narrative. Disclaimer: AI-generated',
-    getBoundingClientRect: () => ({ width: 250, height: 60 }),
-    closest: () => preview
+    getClientRects: () => [{}],
+    closest: selector => selector.startsWith('[hidden]') ? null : preview
   };
   const records = [{ target: { nodeType: 3, parentElement: preview }, addedNodes: [] }];
   for (let i = 0; i < 100; i++) notify(records);
@@ -90,6 +107,7 @@ test('GMGN narrative requests lazy text once per visit without loading another p
   queuedScan();
   assert.deepEqual(hoverEvents, ['pointerover', 'mouseover', 'pointerenter', 'mouseenter', 'pointerout', 'mouseout', 'pointerleave', 'mouseleave']);
   assert.equal(drawings.at(-1).summary, 'First narrative.');
+  preview = { ...preview }; // The outgoing portal can remount before the header changes.
   location.pathname = '/sol/token/second';
   update();
   assert.equal(drawings.length, 2);
@@ -108,6 +126,69 @@ test('GMGN narrative requests lazy text once per visit without loading another p
 
   settings.aiNarrativeEnabled = true;
   location.pathname = '/sol/token/third';
+  pointerOnIcon = true;
   update();
   assert.equal(drawings.at(-1).remove, true);
+  pointerOnIcon = false;
+  runTimer(2000);
+  runTimer(4000);
+  runTimer(4000);
+  runTimer(4000);
+  runTimer(8000);
+  preview = {
+    textContent: 'Late third narrative. Disclaimer: AI-generated',
+    getClientRects: () => [{}], closest: () => null
+  };
+  update();
+  assert.equal(drawings.at(-1).summary, 'Late third narrative.');
+  assert.equal([...timers.values()].some(timer => timer.delay > 0), false);
+
+  const link = {href: 'https://pump.fun/coin/third', getClientRects: () => [{}]};
+  const group = { parentElement: {querySelectorAll: () => [link]}, nextElementSibling: {querySelector: () => icon} };
+  name = {getClientRects: () => [{}], parentElement: {parentElement: {parentElement: group}}};
+  location.pathname = '/sol/token/fourth';
+  preview.textContent = 'Old header updated its tooltip. Disclaimer: AI-generated';
+  const hoverCount = hoverEvents.length;
+  update();
+  assert.equal(hoverEvents.length, hoverCount);
+  assert.equal(drawings.at(-1).remove, true, 'never cache old text under the new URL');
+  link.href = 'https://pump.fun/coin/fourth';
+  iconVisible = false;
+  runTimer(500);
+  iconVisible = true; // No child or text mutation on a responsive layout change.
+  runTimer(1000);
+  assert.equal(drawings.at(-1).remove, true, 'ignore the outgoing portal after the new header commits');
+  assert.equal(hoverEvents.length, hoverCount + 4);
+  preview.textContent = 'Fourth narrative. Disclaimer: AI-generated';
+  update();
+  assert.equal(drawings.at(-1).summary, 'Fourth narrative.');
+});
+
+test('retries an unreceived note and cached narrative when the drawing listener starts late', () => {
+  const code = readFileSync(require.resolve('../content.js'), 'utf8');
+  const section = (start, end) => code.slice(code.indexOf(start), code.indexOf(end));
+  const route = '/token/test';
+  const target = new EventTarget();
+  const context = {
+    window: target, CustomEvent, crypto: require('node:crypto'), location: { pathname: route },
+    settings: { dsmEnabled: true, trendNote: 'saved' }, TOKEN_ROUTE_RE: /token/,
+    stopAiNarrativeCapture() {}
+  };
+  const api = runInNewContext(section('  function sendChartDrawing', '  function updateAiNarrative()') +
+    section('  let trendNoteDrawing;', '  function startUrlWatcher()') +
+    '\n({updateTrendNote, showAiNarrative})', context);
+  const visit = {route, summary: 'cached'};
+  api.updateTrendNote();
+  api.showAiNarrative(visit, visit.summary);
+  assert.equal(visit.drawingKey, null);
+  const received = [];
+  target.addEventListener('DSM_NARRATIVE_DRAWING', event => {
+    received.push(event.detail.summary);
+    event.preventDefault();
+  });
+  api.updateTrendNote();
+  api.updateTrendNote();
+  api.showAiNarrative(visit, visit.summary);
+  assert.ok(visit.drawingKey);
+  assert.deepEqual(received, ['saved', 'cached']);
 });

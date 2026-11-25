@@ -435,7 +435,7 @@
       // over the icon inside its clickable control. Never search broad ancestors:
       // a card/header may contain the Dev icon alongside unrelated buttons.
       for (const element of elements) {
-        const immediateIcon = element.querySelector?.(DEV_ICON_SELECTOR);
+        const immediateIcon = Array.from(element.children || []).find(child => child.matches(DEV_ICON_SELECTOR));
         if (immediateIcon?.parentElement === element && pointHitsIcon(immediateIcon)) {
           icon = immediateIcon;
           break;

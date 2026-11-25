@@ -3,13 +3,43 @@
   window.__dsmNarrativeDrawingInstalled = true;
 
   const drawings = new Map();
-  const pendingDrawings = new WeakMap();
+  const pendingDrawings = { narrative: new WeakMap(), trend: new WeakMap() };
+  const addressPattern = /(?:^|[/:])(0x[\da-fA-F]{40}|[1-9A-HJ-NP-Za-km-z]{32,44})(?=\/|$)/;
+
+  function tokenAddress(value) {
+    const address = typeof value === 'string' ? value.match(addressPattern)?.[1] : undefined;
+    return address?.startsWith('0x') ? address.toLowerCase() : address;
+  }
+
+  function chartAddress(chart) {
+    const symbol = typeof chart.symbol === 'function' ? chart.symbol() : chart.symbol;
+    const address = tokenAddress(symbol);
+    if (address) return address;
+    const info = typeof chart.symbolExt === 'function' ? chart.symbolExt() : chart.symbolExt;
+    return tokenAddress(info?.ticker) || tokenAddress(info?.full_name) || tokenAddress(info?.name);
+  }
+
+  function invalidate(kind, request) {
+    removeDrawing(request);
+    drawings.delete(kind);
+    window.dispatchEvent(new CustomEvent('DSM_NARRATIVE_DRAWING_FAILED', {
+      detail: { key: request.key }
+    }));
+  }
+
+  function isCurrent(kind, request) {
+    if (drawings.get(kind) !== request) return false;
+    if (location.pathname === request.route) return true;
+    invalidate(kind, request);
+    return false;
+  }
 
   function removeDrawing(request) {
     clearTimeout(request.checkTimer);
     try {
       if (request.id != null) {
         request.chart.removeEntity(request.id);
+        request.removedId = request.id;
         request.id = null;
       }
     } catch {
@@ -17,51 +47,124 @@
     }
   }
 
-  function findChart() {
+  function removeLateResult(request, id) {
+    if (id == null || id === request.removedId) return;
+    for (const active of drawings.values()) {
+      if (active.widget !== request.widget) continue;
+      if (active.id === id) return;
+      if (active.id == null && active.pending) {
+        active.pending.then(() => removeLateResult(request, id));
+        return;
+      }
+      if (active.id == null && active.chart) return;
+    }
+    request.id = id;
+    removeDrawing(request);
+  }
+
+  function findChart(address, trendRequest, allowReadyFallback = false) {
     const frames = Array.from(document.querySelectorAll('iframe'), frame => frame.contentWindow);
+    let unidentified = null;
     for (const host of [window, ...frames]) {
       for (const name of ['tradingViewApi', 'tvWidget', 'tradingViewWidget']) {
         try {
           const widget = host?.[name];
+          if (trendRequest && widget?.onChartReady && !trendRequest.watchedWidgets.has(widget)) {
+            trendRequest.watchedWidgets.add(widget);
+            widget.onChartReady(() => {
+              trendRequest.readyWidgets.add(widget);
+              trendRequest.wake?.();
+            });
+          }
+          if (trendRequest && widget?.onChartReady && !allowReadyFallback && !trendRequest.readyWidgets.has(widget)) continue;
           const chart = widget?.activeChart?.();
-          if (typeof chart?.createAnchoredShape === 'function' &&
-              typeof chart.removeEntity === 'function') return { widget, chart };
+          if (typeof chart?.createAnchoredShape !== 'function' || typeof chart.removeEntity !== 'function') continue;
+          if (!address) return { widget, chart };
+          const symbolAddress = chartAddress(chart);
+          if (symbolAddress === address) return { widget, chart };
+          if (!symbolAddress && !unidentified) unidentified = { widget, chart };
         } catch {
           // Try the next widget if this one is unavailable or still mounting.
         }
       }
     }
-    return null;
+    return unidentified;
+  }
+
+  // Some GMGN widgets paint the text but return undefined. Only adopt a newly
+  // listed shape with our text, so cleanup can never target an existing drawing.
+  function newlyDrawnId(chart, before, text) {
+    if (!before || !chart.getShapeById) return;
+    try {
+      const added = chart.getAllShapes().filter(shape => !before.has(shape.id));
+      if (!added.length) return null;
+      let match = null;
+      let readable = true;
+      for (const shape of added) {
+        const actual = chart.getShapeById(shape.id)?.getProperties?.()?.text;
+        if (typeof actual !== 'string') readable = false;
+        if (shape.name === 'anchored_text' && actual === text) {
+          if (match !== null) return;
+          match = shape.id;
+        } else if (actual === text) {
+          readable = false;
+        }
+      }
+      if (match !== null || readable) return match;
+    } catch {
+      // Some widget versions do not expose all drawing properties.
+    }
   }
 
   // A timeframe or layout change can rebuild a chart without changing the token URL.
-  function watchNarrativeChart(request, route) {
+  function watchDrawing(kind, request) {
     function check() {
-      if (drawings.get('narrative') !== request || location.pathname !== route) return;
+      if (!isCurrent(kind, request)) return;
       if (document.visibilityState !== 'hidden') {
-        const active = findChart();
+        const active = findChart(request.address);
         if (active) {
-          let missing = active.chart !== request.chart;
+          // activeChart() may return another wrapper for the same chart.
+          let missing = active.widget !== request.widget;
+          if (!missing && request.unconfirmed) {
+            const id = newlyDrawnId(active.chart, request.unconfirmed.before, request.unconfirmed.text);
+            request.unconfirmed.emptyChecks = id === null ? request.unconfirmed.emptyChecks + 1 : 0;
+            missing = id === null && (!request.pending || request.unconfirmed.emptyChecks >= 3);
+            if (id != null) {
+              request.id = id;
+              request.unconfirmed = null;
+            }
+          }
           if (!missing && request.id != null) {
             try {
               const shapes = active.chart.getAllShapes?.();
-              missing = Array.isArray(shapes) && !shapes.some(shape => shape.id === request.id);
+              if (Array.isArray(shapes)) {
+                missing = !shapes.some(shape => String(shape.id) === String(request.id));
+                if (missing && active.chart.getShapeById) {
+                  try {
+                    const entity = active.chart.getShapeById(request.id);
+                    if (entity) {
+                      entity.getProperties?.();
+                      missing = false;
+                    }
+                  } catch {
+                    // Removed drawings may throw when accessed by ID.
+                  }
+                }
+              } else if (active.chart === request.chart) {
+                missing = false;
+              }
             } catch {
-              // TradingView may briefly reject reads while loading a layout.
+              missing = false;
             }
           }
           if (missing && request.missing) {
-            removeDrawing(request);
-            drawings.delete('narrative');
-            window.dispatchEvent(new CustomEvent('DSM_NARRATIVE_DRAWING_FAILED', {
-              detail: { key: request.key }
-            }));
+            invalidate(kind, request);
             return;
           }
           request.missing = missing;
         }
       }
-      request.checkTimer = setTimeout(check, 2000);
+      request.checkTimer = setTimeout(check, request.missing ? 150 : 2000);
     }
     request.checkTimer = setTimeout(check, 2000);
   }
@@ -118,7 +221,8 @@
     return { position: { x, y }, text: lines.join('\n'), fontSize };
   }
 
-  window.addEventListener('DSM_NARRATIVE_DRAWING', async ({ detail }) => {
+  window.addEventListener('DSM_NARRATIVE_DRAWING', async event => {
+    const { detail } = event;
     if (typeof detail?.key !== 'string') return;
     const kind = detail.kind === 'trend' ? 'trend' : 'narrative';
     const current = drawings.get(kind);
@@ -130,63 +234,99 @@
       return;
     }
     if (detail.route !== location.pathname || typeof detail.summary !== 'string' ||
-        !detail.summary || detail.summary.length > 2400 || current?.key === detail.key) return;
+        !detail.summary || detail.summary.length > 2400) return;
+    event.preventDefault?.();
+    if (current?.key === detail.key) return;
     if (current) removeDrawing(current);
 
-    const request = { key: detail.key, chart: null, id: null };
+    const request = { key: detail.key, route: detail.route, address: tokenAddress(detail.route), chart: null, id: null };
+    const trendRequest = kind === 'trend' ? request : null;
+    if (trendRequest) {
+      trendRequest.watchedWidgets = new WeakSet();
+      trendRequest.readyWidgets = new WeakSet();
+    }
     drawings.set(kind, request);
-    for (let attempt = 0; attempt < 8; attempt += 1) {
-      if (drawings.get(kind) !== request || location.pathname !== detail.route) return;
+    const maxAttempts = trendRequest ? 32 : 8;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      if (!isCurrent(kind, request)) return;
       try {
-        const target = findChart();
+        // An already-mounted widget may never replay its ready notification.
+        const target = findChart(request.address, trendRequest, attempt >= 2);
         if (target) {
           const { chart } = target;
-          const pending = pendingDrawings.get(chart);
-          if (pending) {
-            await pending;
+          const pending = pendingDrawings[kind].get(chart);
+          if (pending && request.waitedFor !== pending) {
+            // Give an obsolete create time to finish its cleanup. A disposed
+            // chart can leave it unresolved even when the next token is ready.
+            request.waitedFor = pending;
+            let timer;
+            await Promise.race([pending, new Promise(resolve => { timer = setTimeout(resolve, 120); })]);
+            clearTimeout(timer);
             attempt -= 1;
             continue;
           }
           const { position, text, fontSize } = drawingLayout(chart,
-            kind === 'trend' ? `趋势备注：${detail.summary}` : detail.summary,
+            kind === 'trend' ? `备注：${detail.summary}` : detail.summary,
             kind);
           request.chart = chart;
-          if (kind === 'narrative') {
-            clearTimeout(request.checkTimer);
-            watchNarrativeChart(request, detail.route);
-          }
+          request.widget = target.widget;
+          clearTimeout(request.checkTimer);
+          watchDrawing(kind, request);
           // A slow creation can already be visible before TradingView returns its ID.
           const drawing = Promise.resolve().then(async () => {
-            if (drawings.get(kind) !== request || location.pathname !== detail.route) return;
+            if (!isCurrent(kind, request)) return;
             try {
-              request.id = await chart.createAnchoredShape(position, {
+              request.unconfirmed = null;
+              try {
+                const shapes = chart.getAllShapes?.();
+                if (Array.isArray(shapes) && chart.getShapeById) {
+                  request.unconfirmed = { before: new Set(shapes.map(shape => shape.id)), text, emptyChecks: 0 };
+                }
+              } catch {
+                // The chart may allow creation before exposing its shape list.
+              }
+              const id = await chart.createAnchoredShape(position, {
                 shape: 'anchored_text',
                 text,
                 disableSave: true,
                 overrides: { color: '#087f89', fontsize: fontSize }
               });
-              if (drawings.get(kind) !== request || location.pathname !== detail.route) removeDrawing(request);
-              return request.id != null;
+              if (!isCurrent(kind, request)) {
+                removeLateResult(request, id);
+                return;
+              }
+              // Older releases return null when creation fails.
+              if (id === null && request.id == null) return false;
+              if (id != null) request.id = id;
+              if (request.id == null && request.unconfirmed) {
+                request.id = newlyDrawnId(chart, request.unconfirmed.before, text);
+              }
+              if (request.id != null) request.unconfirmed = null;
+              // Some widget versions resolve without an ID after painting the text.
+              return true;
             } catch {
               // A rejected creation can be retried once the chart is ready.
             }
-          }).finally(() => pendingDrawings.delete(chart));
-          pendingDrawings.set(chart, drawing);
+          }).finally(() => {
+            request.pending = null;
+            if (pendingDrawings[kind].get(chart) === drawing) pendingDrawings[kind].delete(chart);
+          });
+          request.pending = drawing;
+          pendingDrawings[kind].set(chart, drawing);
           const created = await drawing;
-          if (drawings.get(kind) !== request || location.pathname !== detail.route) return;
+          if (!isCurrent(kind, request)) return;
           if (created) return;
         }
       } catch {
         // Retry while the chart is initializing.
       }
-      if (attempt < 7) await new Promise(resolve => setTimeout(resolve, attempt < 3 ? 100 : 300));
+      if (attempt + 1 < maxAttempts) await new Promise(resolve => {
+        const delay = trendRequest ? (attempt === 0 ? 16 : 50) : (attempt < 3 ? 100 : 300);
+        const timer = setTimeout(resolve, delay);
+        if (trendRequest) trendRequest.wake = () => { clearTimeout(timer); resolve(); };
+      });
+      request.wake = null;
     }
-    if (drawings.get(kind) === request && location.pathname === detail.route) {
-      removeDrawing(request);
-      drawings.delete(kind);
-      window.dispatchEvent(new CustomEvent('DSM_NARRATIVE_DRAWING_FAILED', {
-        detail: { key: request.key }
-      }));
-    }
+    if (isCurrent(kind, request)) invalidate(kind, request);
   });
 })();

@@ -91,7 +91,7 @@ test('Twitter remarks stay within verified tweet cards and respect the event han
   assert.equal(resolveSpokenName({ id: 'actual_author', name: 'Shared nickname' }), 'Correct remark');
 });
 
-test('announcement waits for a late card remark only on cache miss', async () => {
+test('announcement uses available remarks and falls back without waiting', async () => {
   const source = readFileSync(require.resolve('../content.js'), 'utf8');
   const timers = [];
   const messages = [];
@@ -102,31 +102,22 @@ test('announcement waits for a late card remark only on cache miss', async () =>
     source.indexOf('  function sendSpeakMessage')) + source.slice(source.indexOf('  async function speakTwitterAnnouncement'),
     source.indexOf('  function handleTwitterWsMessage')) + 'speakTwitterAnnouncement', {
     social, settings: { twitterVoiceEnabled: true }, isMasterOn: () => true,
-    loadTwitterRemarks: async () => {}, setTimeout: callback => { timers.push(callback); },
-    sweepRemarks: force => { if (force && rendered) social.remarkMap.set('alice', '小林'); },
+    loadTwitterRemarks: () => new Promise(() => {}), setTimeout: callback => { timers.push(callback); },
+    sweepRemarks: () => { if (rendered) social.remarkMap.set('alice', '小林'); },
     normalizeRemarkText: value => value || '', sanitizeSpokenAuthor: value => value || '',
     normalizeNickKey: value => value.toLowerCase(), rememberNickPair() {},
     sendSpeakMessage: text => messages.push(text)
   });
   const triggers = [{ id: 'alice', name: 'alice' }];
-  const pending = speak(triggers, 'first');
-  await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(messages, []);
-  rendered = true;
-  timers.shift()();
-  await pending;
-  assert.deepEqual(messages, ['小林 发推啦']);
+  await speak(triggers, 'first');
+  assert.deepEqual(messages, ['alice 发推啦']);
 
+  rendered = true;
+  await speak(triggers, 'rendered');
+  rendered = false;
   social.announcedTexts.clear();
   await speak(triggers, 'cached');
+  await speak([{ id: 'bob', name: 'Bob' }], 'missing');
   assert.equal(timers.length, 0);
-  assert.deepEqual(messages, ['小林 发推啦', '小林 发推啦']);
-
-  const missing = speak([{ id: 'bob', name: 'Bob' }], 'missing');
-  for (let i = 0; i < 2; i++) {
-    await new Promise(resolve => setImmediate(resolve));
-    timers.shift()();
-  }
-  await missing;
-  assert.equal(messages.at(-1), 'Bob 发推啦');
+  assert.deepEqual(messages, ['alice 发推啦', '小林 发推啦', '小林 发推啦', 'Bob 发推啦']);
 });

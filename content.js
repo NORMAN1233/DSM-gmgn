@@ -45,6 +45,7 @@
   const SETTING_FIELD_KEYS = SETTING_FIELDS.map(settingFieldKey);
 
   let settings = { ...DEFAULT_SETTINGS };
+  let settingsLoaded = false;
 
   const PAGE_HOST = location.hostname.toLowerCase();
   const PAGE_PLATFORM = PAGE_HOST === 'axiom.trade' || PAGE_HOST.endsWith('.axiom.trade')
@@ -122,7 +123,13 @@
     } catch (error) {
       settings = { ...DEFAULT_SETTINGS };
     }
-    applyAll();
+    settingsLoaded = true;
+    if (IS_GMGN) updateTrendNote();
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', applyAll, { once: true });
+    } else {
+      applyAll();
+    }
   }
 
   function isMasterOn() {
@@ -290,6 +297,7 @@
     style.id = 'dsm-viewed-style';
     style.textContent = `
       .${viewed.VIEWED_CLASS} {
+        border-left-width: 0 !important;
         border-left-color: transparent !important;
       }
       html[data-dsm-platform="gmgn"] .${viewed.VIEWED_CLASS}::before,
@@ -400,24 +408,11 @@
     card.classList.toggle(viewed.VIEWED_CLASS, isViewed);
 
     if (isViewed) {
-      // 已应用过则跳过，避免每次扫描重复写相同样式触发样式失效/重排
-      if (card.style.borderLeftColor !== 'transparent') {
-        card.style.setProperty('border-left-color', 'transparent', 'important');
-      }
-      if (card.style.borderLeftWidth !== '0px') {
-        card.style.setProperty('border-left-width', '0', 'important');
-      }
       if (!viewed.processedCards.has(card)) {
         hideCardLeftBars(card);
         viewed.processedCards.add(card);
       }
     } else {
-      if (card.style.borderLeftColor !== '') {
-        card.style.removeProperty('border-left-color');
-      }
-      if (card.style.borderLeftWidth !== '') {
-        card.style.removeProperty('border-left-width');
-      }
       if (viewed.processedCards.has(card)) {
         restoreCardLeftBars(card);
         viewed.processedCards.delete(card);
@@ -571,7 +566,6 @@
     loadViewed();
     handleViewedUrlChange();
     watchedViewedUrl();
-    patchHistory();
 
     viewed.ac = new AbortController();
     document.addEventListener('click', handleTokenClick, { capture: true, signal: viewed.ac.signal });
@@ -617,8 +611,6 @@
 
     document.querySelectorAll('.' + viewed.VIEWED_CLASS).forEach((card) => {
       card.classList.remove(viewed.VIEWED_CLASS);
-      card.style.removeProperty('border-left-color');
-      card.style.removeProperty('border-left-width');
       if (viewed.processedCards.has(card)) {
         restoreCardLeftBars(card);
         viewed.processedCards.delete(card);
@@ -1213,26 +1205,9 @@
   async function speakTwitterAnnouncement(triggers, tweetKey) {
     if (!settings.twitterVoiceEnabled) return;
     const list = Array.isArray(triggers) ? triggers : [];
-    const sessionId = social.sessionId;
-    const stillActive = () => social.started
-      && social.sessionId === sessionId
-      && settings.twitterVoiceEnabled
-      && isMasterOn();
-
-    if (!stillActive()) return;
+    if (!social.started || !isMasterOn()) return;
     const startedAt = Date.now();
-    await loadTwitterRemarks();
-    if (!stillActive()) return;
-
-    // 缓存未命中时，给 GMGN 时间挂载卡片并补上备注样式。
-    const hasMissingRemark = () => list.some(trigger => !resolveSpokenName(trigger));
-    if (hasMissingRemark()) sweepRemarks();
-    for (const delay of [250, 1000]) {
-      if (!hasMissingRemark()) break;
-      await new Promise(resolve => setTimeout(resolve, delay));
-      if (!stillActive()) return;
-      if (hasMissingRemark()) sweepRemarks(true);
-    }
+    if (list.some(trigger => !resolveSpokenName(trigger))) sweepRemarks();
     const text = buildTwitterAnnouncement(list);
     if (!text) return;
     const nowMs = Date.now();
@@ -2472,7 +2447,6 @@
 
     // 主页面不创建圆形 DOM，只有进入 K 线页时才创建
     loadRestState();
-    patchHistory();
 
     decision.ac = new AbortController();
     window.addEventListener('popstate', watchUrl, { signal: decision.ac.signal });
@@ -2514,42 +2488,15 @@
   // ============================================================
   // 公共 history 监听（只包装一次）
   // ============================================================
-  function patchHistory() {
-    if (window.__dsmHistoryPatched) return;
-    window.__dsmHistoryPatched = true;
-
-    const originalPush = history.pushState;
-    const originalReplace = history.replaceState;
-    const syncRoute = () => {
-      watchUrl();
-      watchedViewedUrl();
-      if (IS_GMGN) {
-        updateAiNarrative();
-        updateTrendNote();
-        updateXPostBadge();
-      }
-    };
-    const wrappedPush = function (...args) {
-      const result = originalPush.apply(this, args);
-      setTimeout(syncRoute, 0);
-      return result;
-    };
-    const wrappedReplace = function (...args) {
-      const result = originalReplace.apply(this, args);
-      setTimeout(syncRoute, 0);
-      return result;
-    };
-
-    try {
-      history.pushState = wrappedPush;
-    } catch (error) {
-      // ignore
+  function syncRoute() {
+    if (!settingsLoaded) return;
+    if (IS_GMGN) {
+      updateTrendNote();
+      updateAiNarrative();
+      updateXPostBadge();
     }
-    try {
-      history.replaceState = wrappedReplace;
-    } catch (error) {
-      // ignore
-    }
+    if (viewed.started) watchedViewedUrl();
+    if (decision.started) watchUrl();
   }
 
   // ============================================================
@@ -2575,7 +2522,7 @@
     }
   }
 
-  // SPA 路由的主路径由 history 包装 / popstate / hashchange 即时处理。
+  // SPA 路由的主路径由 Navigation API / popstate / hashchange 即时处理。
   // 这里仅保留 500ms 低频兜底，替代旧版每秒约 60 次的 rAF URL 比对。
   let routeWatcherId = null;
   let xPost = null;
@@ -2711,7 +2658,8 @@
   const AI_NARRATIVE_DISCLAIMER = /(?:免责声明[：:]\s*)?(?:人工智能生成内容|AI\s*生成内容|(?:disclaimer[：:]\s*)?(?:AI[- ]generated|generated by (?:AI|artificial intelligence)))/i;
   const AI_NARRATIVE_TOOLTIP = '.narrative-tooltip';
   const AI_NARRATIVE_ICON = '[data-icon="IconNarrative16pxRegular"]';
-  const narrativeCacheKey = 'dsmAiNarrativeCacheV1';
+  const AI_PUMP_LINK = 'a[href^="https://pump.fun/coin/"], a[href^="https://www.pump.fun/coin/"]';
+  const narrativeCacheKey = 'dsmAiNarrativeCacheV2';
   const aiNarrativeCache = new Map();
   function mergeNarrativeCache(raw, now) {
     const entries = JSON.parse(raw || '[]');
@@ -2742,38 +2690,68 @@
     return summary.slice(0, 2400).replace(/[\uD800-\uDBFF]$/, '');
   }
 
-  function aiNarrativeIcon() {
-    const name = document.querySelector('[data-testid="token-detail-symbol"], #token-base-symbol');
-    const row = name?.parentElement?.parentElement?.parentElement?.nextElementSibling;
-    const icons = document.querySelectorAll(AI_NARRATIVE_ICON);
-    return row?.querySelector(AI_NARRATIVE_ICON) || (icons.length === 1 ? icons[0] : null);
+  function narrativeLabel(node) {
+    return readAiNarrativeText(node.getAttribute('title')) || readAiNarrativeText(node.getAttribute('aria-label'));
+  }
+
+  function narrativeDescriptions(icon) {
+    const ids = icon?.closest('[aria-describedby]')?.getAttribute('aria-describedby');
+    return ids?.trim().split(/\s+/).map(id => document.getElementById(id)).filter(Boolean) || [];
+  }
+
+  function aiNarrativeIcon(route) {
+    const mint = TOKEN_ROUTE_RE.exec(route)?.[1];
+    let staleHeader = false;
+    for (const name of document.querySelectorAll('[data-testid="token-detail-symbol"], #token-base-symbol')) {
+      if (!name.getClientRects().length) continue;
+      const group = name.parentElement?.parentElement?.parentElement;
+      const header = group?.parentElement;
+      const links = header && mint ? Array.from(header.querySelectorAll(AI_PUMP_LINK))
+        .filter(link => link.getClientRects().length) : [];
+      // SPA navigation may commit the URL before React commits the new token header.
+      const headerMints = links.map(link => link.href.split('/coin/')[1]?.split(/[/?#]/)[0]).filter(Boolean);
+      const icon = group?.nextElementSibling?.querySelector(AI_NARRATIVE_ICON);
+      if (headerMints.length && !headerMints.includes(mint)) {
+        staleHeader = true;
+        const oldRoute = route.replace(mint, headerMints[0]);
+        for (let node = icon, depth = 0; node && depth < 3; node = node.parentElement, depth++) {
+          const summary = narrativeLabel(node);
+          if (summary) aiNarrativeSources.set(node, { route: oldRoute, summary });
+        }
+        for (const panel of [...narrativeDescriptions(icon), ...document.querySelectorAll(AI_NARRATIVE_TOOLTIP)]) {
+          const summary = readAiNarrativeText(panel.textContent);
+          if (summary) aiNarrativeSources.set(panel, { route: oldRoute, summary });
+        }
+        continue;
+      }
+      if (icon?.getClientRects().length) return icon;
+    }
+    if (staleHeader) return null;
+    const visible = Array.from(document.querySelectorAll(AI_NARRATIVE_ICON)).filter(icon => icon.getClientRects().length);
+    return visible.length === 1 ? visible[0] : null;
   }
 
   function findAiNarrativeTooltip(route, icon) {
-    const candidates = new Set();
-    if (icon) {
-      const ids = icon.closest('[aria-describedby]')?.getAttribute('aria-describedby');
-      for (const id of ids?.split(/\s+/) || []) {
-        const description = document.getElementById(id);
-        if (description) candidates.add(description);
-      }
+    if (!icon) return null;
+    const candidates = new Set(narrativeDescriptions(icon));
+    // A header label belongs to the token icon even while an unrelated portal is mounted.
+    for (let node = icon, depth = 0; node && depth < 3; node = node.parentElement, depth++) {
+      const narrative = narrativeLabel(node);
+      if (!narrative) continue;
+      const previous = aiNarrativeSources.get(node);
+      if (previous && previous.route !== route && previous.summary === narrative) continue;
+      aiNarrativeSources.set(node, { route, summary: narrative });
+      return narrative;
     }
-    for (const panel of document.querySelectorAll(AI_NARRATIVE_TOOLTIP)) candidates.add(panel);
+    const panels = Array.from(document.querySelectorAll(AI_NARRATIVE_TOOLTIP)).filter(panel =>
+      panel.getClientRects().length && !panel.closest('[hidden], [aria-hidden="true"]'));
+    if (panels.length === 1) candidates.add(panels[0]);
     for (const element of candidates) {
       const narrative = readAiNarrativeText(element.textContent);
       if (!narrative) continue;
       const previous = aiNarrativeSources.get(element);
       if (previous && previous.route !== route && previous.summary === narrative) continue;
       aiNarrativeSources.set(element, { route, summary: narrative });
-      return narrative;
-    }
-    // The detail header may already expose the complete tooltip as an accessible label.
-    for (let node = icon, depth = 0; node && depth < 3; node = node.parentElement, depth++) {
-      const narrative = readAiNarrativeText(node.getAttribute('title')) || readAiNarrativeText(node.getAttribute('aria-label'));
-      if (!narrative) continue;
-      const previous = aiNarrativeSources.get(node);
-      if (previous && previous.route !== route && previous.summary === narrative) continue;
-      aiNarrativeSources.set(node, { route, summary: narrative });
       return narrative;
     }
     return null;
@@ -2786,7 +2764,8 @@
       if (aiNarrativeVisit !== visit || visit.drawingKey || document.visibilityState === 'hidden'
           || location.pathname !== visit.route || visit.scanTimer != null) return;
       const relevant = records.some(({ type, target, addedNodes }) =>
-        (type === 'attributes' && (target.matches(AI_NARRATIVE_ICON) || (visit.requestedIcon && target.contains(visit.requestedIcon)))) ||
+        (type === 'attributes' && (target.matches(AI_NARRATIVE_ICON) || target.matches(AI_PUMP_LINK) ||
+          (visit.requestedIcon && target.contains(visit.requestedIcon)))) ||
         (target.nodeType === 1 ? target : target.parentElement)?.closest(panel) ||
         Array.from(addedNodes).some(node => node.nodeType === 1 && (node.matches(selector) ||
           (node.childElementCount && node.querySelector(selector)))));
@@ -2798,13 +2777,15 @@
     });
     observer.observe(document.body, {
       childList: true, subtree: true, characterData: true,
-      attributes: true, attributeFilter: ['aria-describedby', 'title', 'aria-label', 'data-icon']
+      attributes: true, attributeFilter: ['aria-describedby', 'title', 'aria-label', 'data-icon', 'href']
     });
     return observer;
   }
 
   function stopAiNarrativeCapture(visit) {
     clearTimeout(visit.scanTimer);
+    clearTimeout(visit.headerTimer);
+    visit.headerTimer = null;
     visit.scanTimer = null;
     visit.observer?.disconnect();
     visit.observer = null;
@@ -2827,18 +2808,24 @@
     if (!icon || visit.requestedIcon === icon) return;
     releaseAiNarrativeHover(visit);
     visit.requestedIcon = icon;
-    if (icon.matches(':hover')) return;
-    visit.hoverIcon = icon;
-    visit.hoverTimer = setTimeout(() => {
-      releaseAiNarrativeHover(visit);
-      if (visit.retriedIcon === icon) return;
-      visit.retriedIcon = icon;
+    const retry = () => {
+      const delay = visit.retryDelay || 2000;
+      visit.retryDelay = Math.min(30000, delay * 2);
       visit.hoverTimer = setTimeout(() => {
         if (aiNarrativeVisit !== visit || location.pathname !== visit.route ||
             document.visibilityState === 'hidden' || visit.drawingKey) return;
         visit.requestedIcon = null;
         updateAiNarrative();
-      }, 2000);
+      }, delay);
+    };
+    if (icon.matches(':hover')) {
+      retry();
+      return;
+    }
+    visit.hoverIcon = icon;
+    visit.hoverTimer = setTimeout(() => {
+      releaseAiNarrativeHover(visit);
+      retry();
     }, 4000);
     icon.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse' }));
     icon.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
@@ -2847,6 +2834,14 @@
   }
 
   function finishAiNarrative(visit) {
+    // GMGN can remount the outgoing tooltip just before it replaces the detail header.
+    if (visit.summary && location.pathname !== visit.route) {
+      for (const panel of document.querySelectorAll(AI_NARRATIVE_TOOLTIP)) {
+        if (readAiNarrativeText(panel.textContent) === visit.summary) {
+          aiNarrativeSources.set(panel, { route: visit.route, summary: visit.summary });
+        }
+      }
+    }
     stopAiNarrativeCapture(visit);
     if (visit.drawingKey) {
       window.dispatchEvent(new CustomEvent('DSM_NARRATIVE_DRAWING', {
@@ -2862,6 +2857,12 @@
     visit.retryAt = Date.now();
   });
 
+  function sendChartDrawing(detail) {
+    const event = new CustomEvent('DSM_NARRATIVE_DRAWING', { detail, cancelable: true });
+    window.dispatchEvent(event);
+    return event.defaultPrevented;
+  }
+
   function showAiNarrative(visit, summary) {
     stopAiNarrativeCapture(visit);
     if (summary !== visit.summary) {
@@ -2875,9 +2876,10 @@
     }
     visit.summary = summary;
     visit.drawingKey = crypto.randomUUID();
-    window.dispatchEvent(new CustomEvent('DSM_NARRATIVE_DRAWING', {
-      detail: { key: visit.drawingKey, route: visit.route, summary }
-    }));
+    if (!sendChartDrawing({ key: visit.drawingKey, route: visit.route, summary })) {
+      visit.drawingKey = null;
+      visit.retryAt = Date.now();
+    }
   }
 
   function updateAiNarrative() {
@@ -2907,12 +2909,31 @@
       if (now >= visit.retryAt) showAiNarrative(visit, visit.summary);
       return;
     }
-    const icon = aiNarrativeIcon();
+    const icon = aiNarrativeIcon(route);
+    if (!visit.observer) visit.observer = observeAiNarrative(visit);
+    if (!icon) {
+      if (visit.requestedIcon) {
+        releaseAiNarrativeHover(visit);
+        visit.requestedIcon = null;
+      }
+      // Responsive layout and in-place header swaps can reveal an icon without adding a node.
+      if (visit.headerTimer == null) {
+        const delay = visit.headerDelay || 500;
+        visit.headerDelay = Math.min(5000, delay * 2);
+        visit.headerTimer = setTimeout(() => {
+          visit.headerTimer = null;
+          if (aiNarrativeVisit === visit && location.pathname === route) updateAiNarrative();
+        }, delay);
+      }
+      return;
+    }
+    clearTimeout(visit.headerTimer);
+    visit.headerTimer = null;
+    visit.headerDelay = 0;
     const narrative = findAiNarrativeTooltip(visit.route, icon);
     if (narrative) {
       showAiNarrative(visit, narrative);
     } else {
-      if (!visit.observer) visit.observer = observeAiNarrative(visit);
       requestAiNarrative(visit, icon);
     }
   }
@@ -2939,12 +2960,11 @@
   }, true);
 
   let trendNoteDrawing;
-  let trendNoteRetryAt = 0;
 
   window.addEventListener('DSM_NARRATIVE_DRAWING_FAILED', ({ detail }) => {
     if (!trendNoteDrawing || detail?.key !== trendNoteDrawing.key) return;
     trendNoteDrawing.key = null;
-    trendNoteRetryAt = Date.now() + 1000;
+    if (document.visibilityState === 'visible') updateTrendNote();
   });
 
   function updateTrendNote() {
@@ -2958,24 +2978,21 @@
         }));
       }
       trendNoteDrawing = null;
-      trendNoteRetryAt = 0;
     }
-    if (!summary || trendNoteDrawing?.key || Date.now() < trendNoteRetryAt) return;
+    if (!summary || trendNoteDrawing?.key) return;
     const key = crypto.randomUUID();
     trendNoteDrawing = { route, summary, key };
-    window.dispatchEvent(new CustomEvent('DSM_NARRATIVE_DRAWING', {
-      detail: { kind: 'trend', route, summary, key }
-    }));
+    if (!sendChartDrawing({ kind: 'trend', route, summary, key })) trendNoteDrawing.key = null;
   }
 
   function startUrlWatcher() {
     if (routeWatcherId !== null) return;
     routeWatcherId = setInterval(() => {
       if (document.visibilityState === 'hidden') return;
+      if (IS_GMGN && settings.trendNote) updateTrendNote();
       if (IS_GMGN && settings.aiNarrativeEnabled &&
           (aiNarrativeVisit?.route !== location.pathname ||
            (aiNarrativeVisit?.summary && !aiNarrativeVisit.drawingKey))) updateAiNarrative();
-      if (IS_GMGN && settings.trendNote) updateTrendNote();
       if (IS_GMGN && settings.dsmEnabled && settings.xPostViewsEnabled) updateXPostBadge();
       if (viewed.started) watchedViewedUrl();
       if (decision.started) watchUrl();
@@ -3006,8 +3023,8 @@
     const prev = settings;
     settings = next;
     if (IS_GMGN) {
-      updateAiNarrative();
       updateTrendNote();
+      updateAiNarrative();
       updateXPostBadge();
     }
 
@@ -3097,14 +3114,14 @@
 
     if (!isMasterOn()) return;
 
+    if (IS_GMGN) {
+      updateTrendNote();
+      updateAiNarrative();
+      updateXPostBadge();
+    }
     if (settings.viewedCAEnabled) startViewed();
     if (settings.twitterVoiceEnabled || settings.selectionSearchEnabled) startSocialModule();
     if (settings.decisionEnabled) startDecisionModule();
-    if (IS_GMGN) {
-      updateAiNarrative();
-      updateTrendNote();
-      updateXPostBadge();
-    }
     refreshTicker();
   }
 
@@ -3113,17 +3130,11 @@
   // 或 storage 读取；开关状态仍由 handler 内的 settings 实时判断。
   if (IS_GMGN) installEarlyKeywordInterceptors();
 
-  // 尽早安装 history 补丁：content script 在 document_start 注入，
-  // 先于页面路由捕获原始 pushState/replaceState，SPA 跳转可被零延迟感知。
-  patchHistory();
-
-  function init() {
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', loadSettings, { once: true });
-      return;
-    }
-    loadSettings();
+  window.navigation?.addEventListener('currententrychange', syncRoute);
+  if (IS_GMGN) {
+    window.addEventListener('pageshow', syncRoute);
+    if (!window.navigation) window.addEventListener('popstate', syncRoute);
   }
 
-  init();
+  loadSettings();
 })();
