@@ -2778,7 +2778,7 @@
     const selector = `${panel}, ${AI_NARRATIVE_ICON}`;
     const observer = new MutationObserver(records => {
       if (aiNarrativeVisit !== visit || visit.drawingKey || document.visibilityState === 'hidden'
-          || location.pathname !== visit.route || visit.scanTimer != null) return;
+          || location.pathname !== visit.route || visit.scanQueued) return;
       const relevant = records.some(({ type, target, addedNodes }) =>
         (type === 'attributes' && (target.matches(AI_NARRATIVE_ICON) || target.matches(AI_PUMP_LINK) ||
           (visit.requestedIcon && target.contains(visit.requestedIcon)))) ||
@@ -2786,10 +2786,12 @@
         Array.from(addedNodes).some(node => node.nodeType === 1 && (node.matches(selector) ||
           (node.childElementCount && node.querySelector(selector)))));
       if (!relevant) return;
-      visit.scanTimer = setTimeout(() => {
-        visit.scanTimer = null;
+      visit.scanQueued = true;
+      queueMicrotask(() => {
+        if (!visit.scanQueued) return;
+        visit.scanQueued = false;
         if (aiNarrativeVisit === visit) updateAiNarrative();
-      }, 0);
+      });
     });
     observer.observe(document.body, {
       childList: true, subtree: true, characterData: true,
@@ -2799,10 +2801,9 @@
   }
 
   function stopAiNarrativeCapture(visit) {
-    clearTimeout(visit.scanTimer);
+    visit.scanQueued = false;
     clearTimeout(visit.headerTimer);
     visit.headerTimer = null;
-    visit.scanTimer = null;
     visit.observer?.disconnect();
     visit.observer = null;
     releaseAiNarrativeHover(visit);

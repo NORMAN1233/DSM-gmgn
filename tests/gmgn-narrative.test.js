@@ -66,8 +66,8 @@ test('GMGN narrative recovers slow text and follows the visible token on navigat
     },
     PointerEvent: HoverEvent,
     MouseEvent: HoverEvent,
+    queueMicrotask(callback) { scheduledScans += 1; queuedScan = callback; },
     setTimeout: (callback, delay) => {
-      if (delay === 0) { scheduledScans += 1; queuedScan = callback; }
       timers.set(++timerId, { callback, delay });
       return timerId;
     },

@@ -71,21 +71,21 @@
     removeDrawing(request);
   }
 
-  function findChart(address, trendRequest, allowReadyFallback = false) {
+  function findChart(address, request, allowReadyFallback = false) {
     let unidentified = null;
     for (let i = -1; i < (window.length ?? 0); i++) {
       const host = i < 0 ? window : window[i];
       for (const name of ['tradingViewApi', 'tvWidget', 'tradingViewWidget']) {
         try {
           const widget = host?.[name];
-          if (trendRequest && widget?.onChartReady && !trendRequest.watchedWidgets.has(widget)) {
-            trendRequest.watchedWidgets.add(widget);
+          if (request && widget?.onChartReady && !request.watchedWidgets.has(widget)) {
+            request.watchedWidgets.add(widget);
             widget.onChartReady(() => {
-              trendRequest.readyWidgets.add(widget);
-              trendRequest.wake?.();
+              request.readyWidgets.add(widget);
+              request.wake?.();
             });
           }
-          if (trendRequest && widget?.onChartReady && !allowReadyFallback && !trendRequest.readyWidgets.has(widget)) continue;
+          if (request && widget?.onChartReady && !allowReadyFallback && !request.readyWidgets.has(widget)) continue;
           const chart = widget?.activeChart?.();
           if (typeof chart?.createAnchoredShape !== 'function' || typeof chart.removeEntity !== 'function') continue;
           if (!address) return { widget, chart };
@@ -273,17 +273,15 @@
 
     const request = { kind, key: detail.key, route: detail.route, address: tokenAddress(detail.route), chart: null, id: null };
     const trendRequest = kind === 'trend' ? request : null;
-    if (trendRequest) {
-      trendRequest.watchedWidgets = new WeakSet();
-      trendRequest.readyWidgets = new WeakSet();
-    }
+    request.watchedWidgets = new WeakSet();
+    request.readyWidgets = new WeakSet();
     drawings.set(kind, request);
     const maxAttempts = trendRequest ? 32 : 8;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       if (!isCurrent(kind, request)) return;
       try {
         // An already-mounted widget may never replay its ready notification.
-        const target = findChart(request.address, trendRequest, attempt >= 2);
+        const target = findChart(request.address, request, !trendRequest || attempt >= 2);
         if (target) {
           const { chart } = target;
           const pending = pendingDrawings[kind].get(chart);
@@ -355,7 +353,7 @@
       if (attempt + 1 < maxAttempts) await new Promise(resolve => {
         const delay = trendRequest ? (attempt === 0 ? 16 : 50) : (attempt < 3 ? 100 : 300);
         const timer = setTimeout(resolve, delay);
-        if (trendRequest) trendRequest.wake = () => { clearTimeout(timer); resolve(); };
+        request.wake = () => { clearTimeout(timer); resolve(); };
       });
       request.wake = null;
     }
