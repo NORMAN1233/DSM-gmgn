@@ -1730,6 +1730,14 @@
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (!message || !message.type) return;
 
+    if (message.type === 'DSM_REPORT_NARRATIVE_MISSING') {
+      const visit = aiNarrativeVisit;
+      if (!visit || visit.route !== location.pathname) { sendResponse({ ok: false }); return; }
+      logNarrativeDelay(visit, '用户反馈标注未显示');
+      sendResponse({ ok: true });
+      return;
+    }
+
     if (message.type === 'DSM_WALLET_COPY_STATUS') {
       showSelectionRouteToast(String(message.text || ''), !String(message.text).includes('关闭'), true);
       sendResponse({ ok: true });
@@ -2909,7 +2917,29 @@
     dispatchNarrativeHover(icon, true);
   }
 
+  function logNarrativeDelay(visit, title) {
+    const stage = visit.created ? '图表已返回绘制结果' : visit.summary
+      ? (visit.drawingKey ? '等待图表返回绘制结果' : '绘制失败或图表尚未接收')
+      : (visit.requestedIcon ? '已触发预览，等待可识别正文' : '等待详情页叙事图标');
+    const elapsed = Date.now() - visit.startedAt;
+    try {
+      chrome.runtime.sendMessage({ type: 'DSM_ADD_LOG', category: 'AI 叙事', level: 'warn',
+        title, detail: visit.route + ' | ' + elapsed + ' ms | ' + stage }).catch(() => {});
+    } catch {}
+  }
+
+  window.addEventListener('DSM_NARRATIVE_DRAWING_CREATED', ({ detail }) => {
+    const visit = aiNarrativeVisit;
+    if (!visit || !detail?.key || visit.drawingKey !== detail.key) return;
+    visit.created = true;
+    clearTimeout(visit.logTimer);
+  });
+
   function finishAiNarrative(visit) {
+    clearTimeout(visit.logTimer);
+    if (visit.startedAt != null && !visit.created && !visit.delayLogged && location.pathname !== visit.route) {
+      logNarrativeDelay(visit, '切币时标注尚未完成');
+    }
     if (visit.summary) lastNarrative = { route: visit.route, summary: visit.summary };
     // GMGN can remount the outgoing tooltip just before it replaces the detail header.
     if (visit.summary && location.pathname !== visit.route) {
@@ -2931,6 +2961,11 @@
     const visit = aiNarrativeVisit;
     if (!visit?.drawingKey || detail?.key !== visit.drawingKey) return;
     visit.drawingKey = null;
+    if (visit.startedAt != null && !visit.failureLogged && location.pathname === visit.route) {
+      visit.failureLogged = true;
+      logNarrativeDelay(visit, '图表报告标注失败或已丢失');
+    }
+    visit.created = false;
     visit.retryAt = Date.now();
   });
 
@@ -2953,7 +2988,7 @@
     }
     visit.summary = summary;
     visit.drawingKey = crypto.randomUUID();
-    if (!sendChartDrawing({ key: visit.drawingKey, route: visit.route, summary })) {
+    if (!sendChartDrawing({ key: visit.drawingKey, route: visit.route, summary, reportCreation: visit.startedAt != null })) {
       visit.drawingKey = null;
       visit.retryAt = Date.now();
     }
@@ -2971,7 +3006,16 @@
     const now = Date.now();
     if (!aiNarrativeVisit) {
       for (const legacy of document.querySelectorAll('.dsm-narrative-entry, .dsm-ai-narrative')) legacy.remove();
-      aiNarrativeVisit = { route };
+      const visit = aiNarrativeVisit = { route };
+      if (typeof chrome !== 'undefined' && chrome.runtime?.id) {
+        visit.startedAt = now;
+        visit.logTimer = setTimeout(() => {
+          if (aiNarrativeVisit !== visit || visit.created || location.pathname !== route ||
+              document.visibilityState === 'hidden') return;
+          visit.delayLogged = true;
+          logNarrativeDelay(visit, '进入详情页 5 秒后仍未确认绘制');
+        }, 5000);
+      }
       try { mergeNarrativeCache(localStorage.getItem(narrativeCacheKey), now); } catch {}
       const cached = aiNarrativeCache.get(route);
       if (cached?.expiresAt > now) {

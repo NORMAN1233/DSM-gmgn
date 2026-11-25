@@ -350,7 +350,12 @@
           pendingDrawings[kind].set(chart, drawing);
           const created = await drawing;
           if (!isCurrent(kind, request)) return;
-          if (created) return;
+          if (created) {
+            if (kind === 'narrative' && detail.reportCreation) {
+              window.dispatchEvent(new CustomEvent('DSM_NARRATIVE_DRAWING_CREATED', { detail: { key: request.key } }));
+            }
+            return;
+          }
         }
       } catch {
         // Retry while the chart is initializing.
