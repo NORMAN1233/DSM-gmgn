@@ -100,9 +100,13 @@
   // Some GMGN widgets paint the text but return undefined. Only adopt a newly
   // listed shape with our text, so cleanup can never target an existing drawing.
   function newlyDrawnId(chart, before, text) {
-    if (!before || !chart.getShapeById) return;
+    if (!chart.getShapeById) return;
     try {
-      const added = chart.getAllShapes().filter(shape => !before.has(shape.id));
+      const shapes = chart.getAllShapes?.();
+      if (!Array.isArray(shapes)) return;
+      if (!shapes.length) return null;
+      if (!before) return;
+      const added = shapes.filter(shape => !before.has(shape.id));
       if (!added.length) return null;
       let match = null;
       let readable = true;
@@ -201,6 +205,9 @@
     const columnWidth = width * (isTrend ? 0.56 : 0.54) - 24;
     const narrativeTop = 10;
     let fontSize = 13;
+    // A mounting pane can expose its API at 1px high. Its saved relative
+    // anchor would remain outside the plot even after the pane grows.
+    if (columnWidth < fontSize || height < narrativeTop + fontSize) throw new Error('Chart pane is mounting');
     const measure = !isTrend ? document.createElement('canvas').getContext('2d') : null;
     const wrap = () => {
       if (measure) {
@@ -301,11 +308,11 @@
           const drawing = Promise.resolve().then(async () => {
             if (!isCurrent(kind, request)) return;
             try {
-              request.unconfirmed = null;
+              request.unconfirmed = { before: null, text, emptyChecks: 0 };
               try {
                 const shapes = chart.getShapeById && chart.getAllShapes?.();
                 if (Array.isArray(shapes)) {
-                  request.unconfirmed = { before: new Set(shapes.map(shape => shape.id)), text, emptyChecks: 0 };
+                  request.unconfirmed.before = new Set(shapes.map(shape => shape.id));
                 }
               } catch {
                 // The chart may allow creation before exposing its shape list.

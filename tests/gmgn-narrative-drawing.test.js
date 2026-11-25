@@ -274,6 +274,42 @@ test('detects an unpainted ID-less request when the chart can enumerate entities
   assert.deepEqual(page.errors, ['note']);
 });
 
+test('a cold chart can start reporting a failed ID-less creation after initialization', async () => {
+  let ready = false;
+  const page = mountDrawing({
+    createAnchoredShape() {},
+    getAllShapes() {
+      if (!ready) throw new Error('chart is mounting');
+      return [];
+    },
+    getShapeById: () => null,
+    removeEntity() { assert.fail('there is no owned shape to remove'); }
+  });
+  await page.draw('narrative', 'cold');
+  ready = true;
+  await page.tick(2000);
+  await page.tick(150);
+  assert.deepEqual(page.errors, ['cold']);
+});
+
+test('waits for the new pane to lay out before saving its normalized anchor', async () => {
+  let height = 1;
+  const positions = [];
+  const page = mountDrawing({
+    getPanes: () => [{ getHeight: () => height }],
+    createAnchoredShape(position) { positions.push(position); return 42; },
+    removeEntity() {}
+  });
+  const drawing = page.draw('narrative', 'first visit');
+  await flush();
+  assert.equal(positions.length, 0);
+  height = 500;
+  await page.tick(100);
+  await drawing;
+  assert.equal(positions.length, 1);
+  assert.equal(positions[0].y, 10 / height);
+});
+
 test('invalidates the monitor and its drawing key when it observes navigation', async () => {
   const removed = [];
   const page = mountDrawing({ createAnchoredShape: () => 7, removeEntity: id => removed.push(id) });
