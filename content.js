@@ -260,7 +260,7 @@
 
   function markViewed(ca) {
     ca = normalizeCA(ca);
-    if (!ca) return;
+    if (!ca || viewed.viewedMap.has(ca)) return;
 
     // localStorage 在同一站点的标签页之间共享。先吸收其他标签页
     // 最新数据，再追加当前 CA；立即写本地用于跨标签页快速传播，Chrome storage
@@ -273,17 +273,11 @@
     persistViewedDebounced();
   }
 
-  // 已看集合持久化节流：高频浏览时避免每次访问都对整个（持续增大的）Map 做
-  // 同步 JSON 序列化（localStorage 写入会阻塞主线程），合并到每秒最多一次。
+  // markViewed 已同步同源标签；跨站持久化前由 saveViewed 合并最新快照。
   function persistViewedDebounced() {
     if (viewed.persistTimer !== null) return;
     viewed.persistTimer = setTimeout(() => {
       viewed.persistTimer = null;
-      try {
-        writeLocalViewed();
-      } catch (error) {
-        // ignore
-      }
       saveViewed().catch((error) => {
         console.warn('[DSM-gmgn] 保存已看 CA 失败：', error);
       });
@@ -491,16 +485,19 @@
         }
 
         if (!mutation.addedNodes.length) continue;
-        const viewedCard = mutation.target.closest?.(viewed.CARD_SELECTOR);
-        const checkRails = viewedCard?.classList.contains(viewed.VIEWED_CLASS);
+        let viewedCard;
         for (const node of mutation.addedNodes) {
           if (node.nodeType !== Node.ELEMENT_NODE || !node.isConnected) continue;
+          if (viewedCard === undefined) {
+            const card = mutation.target.closest?.(viewed.CARD_SELECTOR);
+            viewedCard = card?.classList.contains(viewed.VIEWED_CLASS) ? card : null;
+          }
           if (node.matches(viewed.CARD_SELECTOR)) cardsToApply.add(node);
           if (node.childElementCount) {
             for (const card of node.querySelectorAll(viewed.CARD_SELECTOR)) cardsToApply.add(card);
           }
 
-          if (checkRails && (node.matches(VIEWED_LEGACY_RAIL_SELECTOR) ||
+          if (viewedCard && (node.matches(VIEWED_LEGACY_RAIL_SELECTOR) ||
               (node.childElementCount && node.querySelector(VIEWED_LEGACY_RAIL_SELECTOR)))) {
             viewed.processedCards.delete(viewedCard);
             cardsToApply.add(viewedCard);
@@ -2659,7 +2656,7 @@
   const AI_NARRATIVE_TOOLTIP = '.narrative-tooltip';
   const AI_NARRATIVE_ICON = '[data-icon="IconNarrative16pxRegular"]';
   const AI_PUMP_LINK = 'a[href^="https://pump.fun/coin/"], a[href^="https://www.pump.fun/coin/"]';
-  const narrativeCacheKey = 'dsmAiNarrativeCacheV2';
+  const narrativeCacheKey = 'dsmAiNarrativeCacheV3';
   const aiNarrativeCache = new Map();
   function mergeNarrativeCache(raw, now) {
     const entries = JSON.parse(raw || '[]');
@@ -2678,6 +2675,7 @@
 
   const aiNarrativeSources = new WeakMap();
   let aiNarrativeVisit = null;
+  let lastNarrative = null;
 
   function readAiNarrativeText(value) {
     const text = (value || '').trim();
@@ -2737,7 +2735,7 @@
     // A header label belongs to the token icon even while an unrelated portal is mounted.
     for (let node = icon, depth = 0; node && depth < 3; node = node.parentElement, depth++) {
       const narrative = narrativeLabel(node);
-      if (!narrative) continue;
+      if (!narrative || (lastNarrative?.route !== route && lastNarrative?.summary === narrative)) continue;
       const previous = aiNarrativeSources.get(node);
       if (previous && previous.route !== route && previous.summary === narrative) continue;
       aiNarrativeSources.set(node, { route, summary: narrative });
@@ -2748,7 +2746,7 @@
     if (panels.length === 1) candidates.add(panels[0]);
     for (const element of candidates) {
       const narrative = readAiNarrativeText(element.textContent);
-      if (!narrative) continue;
+      if (!narrative || (lastNarrative?.route !== route && lastNarrative?.summary === narrative)) continue;
       const previous = aiNarrativeSources.get(element);
       if (previous && previous.route !== route && previous.summary === narrative) continue;
       aiNarrativeSources.set(element, { route, summary: narrative });
@@ -2834,6 +2832,7 @@
   }
 
   function finishAiNarrative(visit) {
+    if (visit.summary) lastNarrative = { route: visit.route, summary: visit.summary };
     // GMGN can remount the outgoing tooltip just before it replaces the detail header.
     if (visit.summary && location.pathname !== visit.route) {
       for (const panel of document.querySelectorAll(AI_NARRATIVE_TOOLTIP)) {
@@ -2987,13 +2986,23 @@
 
   function startUrlWatcher() {
     if (routeWatcherId !== null) return;
+    let lastPath = null;
+    let tokenPage = false;
     routeWatcherId = setInterval(() => {
       if (document.visibilityState === 'hidden') return;
-      if (IS_GMGN && settings.trendNote) updateTrendNote();
-      if (IS_GMGN && settings.aiNarrativeEnabled &&
-          (aiNarrativeVisit?.route !== location.pathname ||
-           (aiNarrativeVisit?.summary && !aiNarrativeVisit.drawingKey))) updateAiNarrative();
-      if (IS_GMGN && settings.dsmEnabled && settings.xPostViewsEnabled) updateXPostBadge();
+      const path = location.pathname;
+      if (IS_GMGN && lastPath !== path) {
+        lastPath = path;
+        tokenPage = TOKEN_ROUTE_RE.test(path);
+      }
+      if (IS_GMGN && settings.dsmEnabled) {
+        if (settings.trendNote && (trendNoteDrawing?.route !== path || !trendNoteDrawing.key) &&
+            (tokenPage || trendNoteDrawing)) updateTrendNote();
+        if (settings.aiNarrativeEnabled && (tokenPage || aiNarrativeVisit) &&
+            (aiNarrativeVisit?.route !== path ||
+             (aiNarrativeVisit?.summary && !aiNarrativeVisit.drawingKey))) updateAiNarrative();
+        if (settings.xPostViewsEnabled && (tokenPage || xPost || xPostBadge?.isConnected)) updateXPostBadge();
+      }
       if (viewed.started) watchedViewedUrl();
       if (decision.started) watchUrl();
     }, 500);

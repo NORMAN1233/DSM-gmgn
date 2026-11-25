@@ -62,15 +62,17 @@
       const row = rowFromNode(node);
       if (!row || seen.has(row) || !row.isConnected) continue;
       seen.add(row);
+      const rect = row.getBoundingClientRect();
+      let top = Math.max(0, rect.top), bottom = Math.min(innerHeight, rect.bottom);
+      let left = Math.max(0, rect.left), right = Math.min(innerWidth, rect.right);
+      if (rect.width <= 0 || rect.height <= 0 || bottom <= top || right <= left) continue;
+      // Ancestor clipping can only move the visible top edge down.
+      if (best && top >= best.top) continue;
       const ca = caFromRow(row);
       let url;
       try { url = new URL(row.href); } catch { continue; }
       if (!ca || url.protocol !== 'https:' || !/(^|\.)gmgn\.ai$/i.test(url.hostname)) continue;
       if (row.checkVisibility && !row.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) continue;
-      const rect = row.getBoundingClientRect();
-      let top = Math.max(0, rect.top), bottom = Math.min(innerHeight, rect.bottom);
-      let left = Math.max(0, rect.left), right = Math.min(innerWidth, rect.right);
-      if (rect.width <= 0 || rect.height <= 0 || bottom <= top || right <= left) continue;
       let hidden = false;
       for (let parent = row; parent; parent = parent.parentElement) {
         const style = getComputedStyle(parent);
@@ -87,6 +89,7 @@
         }
       }
       if (hidden || bottom <= top || right <= left) continue;
+      if (top === 0) return { row, ca, top };
       if (!best || top < best.top) best = { row, ca, top };
     }
     return best;

@@ -171,17 +171,21 @@ const firstMint = 'Dk2Gv6Gd5hgm1q2iQr7fgdsGtRufRFA33fgzEYMUpump';
 const secondMint = '3VYPCSoDs4NdjhCQCscfSj3u6N9EQV9aGSusPEHTpump';
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
-function mountDrawing(chart) {
+function mountDrawing(chart, { inFrame = false } = {}) {
   const listener = {};
   const timers = new Map();
   const errors = [];
   const location = { pathname: '/sol/token/' + firstMint };
-  const widget = { activeChart: () => chart };
+  const counts = { widgetReads: 0, domQueries: 0 };
+  const widget = { activeChart() { counts.widgetReads++; return chart; } };
   runInNewContext(readFileSync(require.resolve('../gmgn-narrative-drawing.js'), 'utf8'), {
     location, innerHeight: 900, innerWidth: 1200, CustomEvent,
-    document: { querySelectorAll: () => [], createElement: () => ({ getContext: () => null }) },
+    document: {
+      querySelectorAll() { counts.domQueries++; return []; },
+      createElement: () => ({ getContext: () => null })
+    },
     window: {
-      tradingViewApi: widget,
+      ...(inFrame ? { length: 1, 0: { tradingViewApi: widget } } : { tradingViewApi: widget }),
       addEventListener(type, fn) { listener[type] = fn; },
       dispatchEvent(event) { errors.push(event.detail.key); }
     },
@@ -189,7 +193,7 @@ function mountDrawing(chart) {
     clearTimeout(fn) { timers.delete(fn); }
   });
   return {
-    location, errors,
+    location, errors, counts, timers,
     draw(kind, key) {
       return listener.DSM_NARRATIVE_DRAWING({ detail: { kind, key, route: location.pathname, summary: key } });
     },
@@ -344,4 +348,36 @@ test('a still-visible drawing with a hung promise is adopted without re-creation
   finish(9);
   await drawing;
   assert.deepEqual(removed, [9]);
+});
+
+test('both healthy annotations share a single chart lookup and shape list per interval', async () => {
+  let lists = 0;
+  const shapes = [];
+  const page = mountDrawing({
+    symbol: () => firstMint,
+    createAnchoredShape() {
+      const id = shapes.length + 1;
+      shapes.push({ id });
+      return id;
+    },
+    removeEntity() {},
+    getAllShapes() { lists++; return shapes; }
+  }, { inFrame: true });
+  await page.draw('trend', 'note');
+  await page.draw('narrative', 'ai');
+  await page.tick(2000);
+  await page.tick(2000);
+  const readsBefore = page.counts.widgetReads;
+  const listsBefore = lists;
+  for (let i = 0; i < 5; i++) {
+    assert.equal(page.timers.size, 1);
+    await page.tick(2000);
+  }
+  assert.equal(page.counts.widgetReads - readsBefore, 5);
+  assert.equal(lists - listsBefore, 5);
+  assert.equal(page.counts.domQueries, 0);
+  await page.remove('trend', 'note');
+  await page.remove('narrative', 'ai');
+  assert.equal(page.timers.size, 0);
+  assert.deepEqual(page.errors, []);
 });

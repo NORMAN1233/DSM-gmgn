@@ -112,6 +112,9 @@ test('GMGN narrative recovers slow text and follows the visible token on navigat
   update();
   assert.equal(drawings.length, 2);
   assert.equal(drawings.at(-1).remove, true);
+  preview = { ...preview }; // React can recreate the same stale text after navigation as well.
+  update();
+  assert.equal(drawings.length, 2, 'a replacement tooltip containing the previous token must not draw');
   preview.textContent = 'Second narrative. Disclaimer: AI-generated';
   update();
   assert.equal(drawings.at(-1).summary, 'Second narrative.');

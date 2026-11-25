@@ -3,6 +3,8 @@
   window.__dsmNarrativeDrawingInstalled = true;
 
   const drawings = new Map();
+  const stableChecks = new Set();
+  let stableTimer = null;
   const pendingDrawings = { narrative: new WeakMap(), trend: new WeakMap() };
   const addressPattern = /(?:^|[/:])(0x[\da-fA-F]{40}|[1-9A-HJ-NP-Za-km-z]{32,44})(?=\/|$)/;
 
@@ -36,6 +38,10 @@
 
   function removeDrawing(request) {
     clearTimeout(request.checkTimer);
+    if (stableChecks.delete(request) && !stableChecks.size) {
+      clearTimeout(stableTimer);
+      stableTimer = null;
+    }
     try {
       if (request.id != null) {
         request.chart.removeEntity(request.id);
@@ -63,9 +69,9 @@
   }
 
   function findChart(address, trendRequest, allowReadyFallback = false) {
-    const frames = Array.from(document.querySelectorAll('iframe'), frame => frame.contentWindow);
     let unidentified = null;
-    for (const host of [window, ...frames]) {
+    for (let i = -1; i < (window.length ?? 0); i++) {
+      const host = i < 0 ? window : window[i];
       for (const name of ['tradingViewApi', 'tvWidget', 'tradingViewWidget']) {
         try {
           const widget = host?.[name];
@@ -117,11 +123,14 @@
   }
 
   // A timeframe or layout change can rebuild a chart without changing the token URL.
-  function watchDrawing(kind, request) {
-    function check() {
-      if (!isCurrent(kind, request)) return;
+  function checkDrawings(requests) {
+    let active;
+    let shapes;
+    for (const request of requests) {
+      const { kind } = request;
+      if (!isCurrent(kind, request)) continue;
       if (document.visibilityState !== 'hidden') {
-        const active = findChart(request.address);
+        if (active === undefined) active = findChart(request.address);
         if (active) {
           // activeChart() may return another wrapper for the same chart.
           let missing = active.widget !== request.widget;
@@ -136,7 +145,7 @@
           }
           if (!missing && request.id != null) {
             try {
-              const shapes = active.chart.getAllShapes?.();
+              if (shapes === undefined) shapes = active.chart.getAllShapes?.() ?? null;
               if (Array.isArray(shapes)) {
                 missing = !shapes.some(shape => String(shape.id) === String(request.id));
                 if (missing && active.chart.getShapeById) {
@@ -159,14 +168,30 @@
           }
           if (missing && request.missing) {
             invalidate(kind, request);
-            return;
+            continue;
           }
           request.missing = missing;
         }
       }
-      request.checkTimer = setTimeout(check, request.missing ? 150 : 2000);
+      watchDrawing(request);
     }
-    request.checkTimer = setTimeout(check, 2000);
+  }
+
+  function watchDrawing(request) {
+    if (request.missing || request.id == null) {
+      request.checkTimer = setTimeout(() => checkDrawings([request]), request.missing ? 150 : 2000);
+      return;
+    }
+
+    // Both healthy annotations use the same current chart and shape list for this tick.
+    stableChecks.add(request);
+    if (stableTimer !== null) return;
+    stableTimer = setTimeout(() => {
+      stableTimer = null;
+      const requests = [...stableChecks];
+      stableChecks.clear();
+      checkDrawings(requests);
+    }, 2000);
   }
 
   function drawingLayout(chart, summary, kind) {
@@ -239,7 +264,7 @@
     if (current?.key === detail.key) return;
     if (current) removeDrawing(current);
 
-    const request = { key: detail.key, route: detail.route, address: tokenAddress(detail.route), chart: null, id: null };
+    const request = { kind, key: detail.key, route: detail.route, address: tokenAddress(detail.route), chart: null, id: null };
     const trendRequest = kind === 'trend' ? request : null;
     if (trendRequest) {
       trendRequest.watchedWidgets = new WeakSet();
@@ -271,15 +296,15 @@
           request.chart = chart;
           request.widget = target.widget;
           clearTimeout(request.checkTimer);
-          watchDrawing(kind, request);
+          watchDrawing(request);
           // A slow creation can already be visible before TradingView returns its ID.
           const drawing = Promise.resolve().then(async () => {
             if (!isCurrent(kind, request)) return;
             try {
               request.unconfirmed = null;
               try {
-                const shapes = chart.getAllShapes?.();
-                if (Array.isArray(shapes) && chart.getShapeById) {
+                const shapes = chart.getShapeById && chart.getAllShapes?.();
+                if (Array.isArray(shapes)) {
                   request.unconfirmed = { before: new Set(shapes.map(shape => shape.id)), text, emptyChecks: 0 };
                 }
               } catch {
