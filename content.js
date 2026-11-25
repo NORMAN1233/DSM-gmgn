@@ -2808,16 +2808,41 @@
     releaseAiNarrativeHover(visit);
   }
 
+  function dispatchNarrativeHover(icon, entering) {
+    const rect = icon.getBoundingClientRect();
+    const point = { clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 };
+    const send = (target, type, bubbles) => {
+      const options = { ...point, bubbles, composed: bubbles };
+      target.dispatchEvent(type.startsWith('pointer')
+        ? new PointerEvent(type, { ...options, pointerId: 1, pointerType: 'mouse', isPrimary: true })
+        : new MouseEvent(type, options));
+    };
+    const path = [icon];
+    // Native enter/leave events are delivered independently to the SVG and
+    // its wrapper. Dispatching enter only on the SVG skips wrapper listeners.
+    for (let parent = icon.parentElement; parent && path.length < 4; parent = parent.parentElement) {
+      if (parent === document.body || parent.childElementCount !== 1) break;
+      path.push(parent);
+    }
+    send(icon, entering ? 'pointerover' : 'pointerout', true);
+    send(icon, entering ? 'mouseover' : 'mouseout', true);
+    for (const target of entering ? path.reverse() : path) {
+      send(target, entering ? 'pointerenter' : 'pointerleave', false);
+      send(target, entering ? 'mouseenter' : 'mouseleave', false);
+    }
+    if (entering) {
+      send(icon, 'pointermove', true);
+      send(icon, 'mousemove', true);
+    }
+  }
+
   function releaseAiNarrativeHover(visit) {
     clearTimeout(visit.hoverTimer);
     visit.hoverTimer = null;
     const icon = visit.hoverIcon;
     visit.hoverIcon = null;
     if (!icon?.isConnected || icon.matches(':hover')) return;
-    icon.dispatchEvent(new PointerEvent('pointerout', { bubbles: true, pointerType: 'mouse' }));
-    icon.dispatchEvent(new MouseEvent('mouseout', { bubbles: true }));
-    icon.dispatchEvent(new PointerEvent('pointerleave', { pointerType: 'mouse' }));
-    icon.dispatchEvent(new MouseEvent('mouseleave'));
+    dispatchNarrativeHover(icon, false);
   }
 
   function requestAiNarrative(visit, icon) {
@@ -2851,10 +2876,7 @@
       visit.openTime = Math.min(32000, openTime * 2);
       retry();
     }, openTime);
-    icon.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse' }));
-    icon.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-    icon.dispatchEvent(new PointerEvent('pointerenter', { pointerType: 'mouse' }));
-    icon.dispatchEvent(new MouseEvent('mouseenter'));
+    dispatchNarrativeHover(icon, true);
   }
 
   function finishAiNarrative(visit) {

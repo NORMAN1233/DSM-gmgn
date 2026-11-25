@@ -19,16 +19,24 @@ test('GMGN narrative recovers slow text and follows the visible token on navigat
   let now = 0;
   const hoverEvents = [];
   let pointerOnIcon = false;
+  const enter = ["pointerover", "mouseover", "pointerenter", "mouseenter", "pointermove", "mousemove"];
   const icon = {
+    getBoundingClientRect: () => ({ left: 10, top: 20, width: 16, height: 16 }),
     isConnected: true,
     closest: () => null,
     getClientRects: () => iconVisible ? [{}] : [],
     matches: () => pointerOnIcon,
     getAttribute: () => null,
-    dispatchEvent: event => hoverEvents.push(event.type)
+    dispatchEvent: event => {
+      hoverEvents.push(event.type);
+      if (event.type === "pointermove") {
+        assert.equal(event.clientX, 18);
+        assert.equal(event.clientY, 28);
+      }
+    }
   };
   class HoverEvent {
-    constructor(type) { this.type = type; }
+    constructor(type, options) { this.type = type; Object.assign(this, options); }
   }
   let notify;
   let queuedScan;
@@ -93,7 +101,7 @@ test('GMGN narrative recovers slow text and follows the visible token on navigat
   now = 20000;
   update();
   assert.equal(drawings.length, 0);
-  assert.deepEqual(hoverEvents, ['pointerover', 'mouseover', 'pointerenter', 'mouseenter']);
+  assert.deepEqual(hoverEvents, enter);
   assert.equal(listeners.has('keydown'), false);
   assert.equal(listeners.has('keyup'), false);
   preview = {
@@ -105,7 +113,7 @@ test('GMGN narrative recovers slow text and follows the visible token on navigat
   for (let i = 0; i < 100; i++) notify(records);
   assert.equal(scheduledScans, 1);
   queuedScan();
-  assert.deepEqual(hoverEvents, ['pointerover', 'mouseover', 'pointerenter', 'mouseenter', 'pointerout', 'mouseout', 'pointerleave', 'mouseleave']);
+  assert.deepEqual(hoverEvents, [...enter, 'pointerout', 'mouseout', 'pointerleave', 'mouseleave']);
   assert.equal(drawings.at(-1).summary, 'First narrative.');
   preview = { ...preview }; // The outgoing portal can remount before the header changes.
   location.pathname = '/sol/token/second';
@@ -165,7 +173,7 @@ test('GMGN narrative recovers slow text and follows the visible token on navigat
   iconVisible = true; // No child or text mutation on a responsive layout change.
   runTimer(1000);
   assert.equal(drawings.at(-1).remove, true, 'ignore the outgoing portal after the new header commits');
-  assert.equal(hoverEvents.length, hoverCount + 4);
+  assert.equal(hoverEvents.length, hoverCount + enter.length);
   preview.textContent = 'Fourth narrative. Disclaimer: AI-generated';
   update();
   assert.equal(drawings.at(-1).summary, 'Fourth narrative.');
@@ -219,4 +227,25 @@ test('retries an unreceived note and cached narrative when the drawing listener 
   api.showAiNarrative(visit, visit.summary);
   assert.ok(visit.drawingKey);
   assert.deepEqual(received, ['saved', 'cached']);
+});
+
+test('automatic hover reaches the native wrapper and sends a positioned move', () => {
+  const code = readFileSync(require.resolve('../content.js'), 'utf8');
+  const wrapper = { childElementCount: 1 };
+  let open = false;
+  let loaded = false;
+  wrapper.dispatchEvent = event => { if (event.type === 'mouseenter') open = true; };
+  const icon = {
+    parentElement: wrapper,
+    getBoundingClientRect: () => ({left: 10, top: 20, width: 16, height: 16}),
+    dispatchEvent(event) {
+      if (open && event.type === 'pointermove' && event.clientX === 18 && event.clientY === 28) loaded = true;
+    }
+  };
+  class Event { constructor(type, options) { this.type = type; Object.assign(this, options); } }
+  const send = runInNewContext(code.slice(code.indexOf('  function dispatchNarrativeHover('),
+    code.indexOf('  function releaseAiNarrativeHover(')) + '\ndispatchNarrativeHover',
+    { document: { body: {} }, PointerEvent: Event, MouseEvent: Event });
+  send(icon, true);
+  assert.equal(loaded, true);
 });
