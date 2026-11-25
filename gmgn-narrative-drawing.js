@@ -4,6 +4,7 @@
 
   const drawings = new Map();
   const stableChecks = new Set();
+  const widgetsWithTokenAddress = new WeakSet();
   let stableTimer = null;
   const pendingDrawings = { narrative: new WeakMap(), trend: new WeakMap() };
   const addressPattern = /(?:^|[/:])(0x[\da-fA-F]{40}|[1-9A-HJ-NP-Za-km-z]{32,44})(?=\/|$)/;
@@ -90,8 +91,12 @@
           if (typeof chart?.createAnchoredShape !== 'function' || typeof chart.removeEntity !== 'function') continue;
           if (!address) return { widget, chart };
           const symbolAddress = chartAddress(chart);
-          if (symbolAddress === address) return { widget, chart };
-          if (!symbolAddress && !unidentified) unidentified = { widget, chart };
+          if (symbolAddress) {
+            widgetsWithTokenAddress.add(widget);
+            if (symbolAddress === address) return { widget, chart };
+          } else if (!widgetsWithTokenAddress.has(widget) && !unidentified) {
+            unidentified = { widget, chart };
+          }
         } catch {
           // Try the next widget if this one is unavailable or still mounting.
         }

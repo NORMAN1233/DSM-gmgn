@@ -229,6 +229,30 @@ for (const kind of ['narrative']) {
   });
 }
 
+test('rapid navigation waits for the reused widget to identify the final token', async () => {
+  let symbol = firstMint;
+  const painted = [];
+  const page = mountDrawing({
+    symbol: () => symbol,
+    createAnchoredShape(_, { text }) { painted.push([symbol, text]); return text; },
+    removeEntity() {}
+  });
+  await page.draw('narrative', 'A');
+  symbol = '';
+  page.location.pathname = '/sol/token/' + secondMint;
+  const intermediate = page.draw('narrative', 'B');
+  const finalMint = '62wrwrnSB4yc7vcxZKZvMjT6ppiVPyXZD5FL5a1Kpump';
+  page.location.pathname = '/sol/token/' + finalMint;
+  const final = page.draw('narrative', 'C');
+  await flush();
+  assert.deepEqual(painted, [[firstMint, 'A']]);
+  symbol = finalMint;
+  await page.tick(100);
+  await page.tick(100);
+  await Promise.all([intermediate, final]);
+  assert.deepEqual(painted, [[firstMint, 'A'], [finalMint, 'C']]);
+});
+
 test('stalled create on reused chart cannot block a new token or remove its drawing', async () => {
   let oldFinish;
   const removed = [];
