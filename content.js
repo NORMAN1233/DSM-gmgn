@@ -2837,6 +2837,8 @@
   }
 
   function releaseAiNarrativeHover(visit) {
+    clearTimeout(visit.probeTimer);
+    visit.probeTimer = null;
     clearTimeout(visit.hoverTimer);
     visit.hoverTimer = null;
     const icon = visit.hoverIcon;
@@ -2849,6 +2851,20 @@
     if (!icon || visit.requestedIcon === icon) return;
     releaseAiNarrativeHover(visit);
     visit.requestedIcon = icon;
+    // Native previews can reveal already-mounted text using CSS alone.
+    const probeDelays = [80, 240, 640];
+    const probe = index => {
+      visit.probeTimer = setTimeout(() => {
+        visit.probeTimer = null;
+        if (aiNarrativeVisit !== visit || visit.route !== location.pathname ||
+            document.visibilityState === 'hidden' || visit.requestedIcon !== icon) return;
+        updateAiNarrative();
+        if (!visit.summary && visit.requestedIcon === icon && index + 1 < probeDelays.length) {
+          probe(index + 1);
+        }
+      }, probeDelays[index]);
+    };
+    probe(0);
     const retry = () => {
       const delay = visit.retryDelay || 2000;
       visit.retryDelay = Math.min(30000, delay * 2);
@@ -2966,7 +2982,7 @@
       }
       // Responsive layout and in-place header swaps can reveal an icon without adding a node.
       if (visit.headerTimer == null) {
-        const delay = visit.headerDelay || 500;
+        const delay = visit.headerDelay || 100;
         visit.headerDelay = Math.min(5000, delay * 2);
         visit.headerTimer = setTimeout(() => {
           visit.headerTimer = null;

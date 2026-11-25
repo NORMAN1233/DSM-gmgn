@@ -154,7 +154,7 @@ test('GMGN narrative recovers slow text and follows the visible token on navigat
     getClientRects: () => [{}], closest: () => null
   };
   // Existing preview becomes visible without a DOM notification.
-  runTimer(16000);
+  runTimer(80);
   assert.equal(drawings.at(-1).summary, 'Late third narrative.');
   assert.equal([...timers.values()].some(timer => timer.delay > 0), false);
 
@@ -171,9 +171,9 @@ test('GMGN narrative recovers slow text and follows the visible token on navigat
   assert.equal(drawings.at(-1).remove, true, 'never cache old text under the new URL');
   link.href = 'https://pump.fun/coin/fourth';
   iconVisible = false;
-  runTimer(500);
+  runTimer(100);
   iconVisible = true; // No child or text mutation on a responsive layout change.
-  runTimer(1000);
+  runTimer(200);
   assert.equal(drawings.at(-1).remove, true, 'ignore the outgoing portal after the new header commits');
   assert.equal(hoverEvents.length, hoverCount + enter.length);
   preview.textContent = 'Fourth narrative. Disclaimer: AI-generated';
