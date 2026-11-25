@@ -144,7 +144,12 @@ test('GMGN narrative recovers slow text and follows the visible token on navigat
   assert.equal(drawings.at(-1).remove, true);
   pointerOnIcon = false;
   runTimer(2000);
+  preview = { textContent: 'Loading', getClientRects: () => [{}], closest: () => null };
+  const beforeLoading = hoverEvents.length;
   runTimer(4000);
+  assert.equal(hoverEvents.length, beforeLoading, 'keep the loading preview open');
+  preview = null;
+  runTimer(12000);
   runTimer(4000);
   // The next native request has eight seconds to finish.
   runTimer(8000);

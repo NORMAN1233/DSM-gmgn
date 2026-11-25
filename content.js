@@ -2882,17 +2882,24 @@
     }
     visit.hoverIcon = icon;
     const openTime = visit.openTime || 4000;
-    visit.hoverTimer = setTimeout(() => {
+    const checkOpenPreview = allowGrace => {
       if (aiNarrativeVisit !== visit || location.pathname !== visit.route ||
           document.visibilityState === 'hidden' || visit.hoverIcon !== icon) return;
       // A mounted tooltip can become visible through CSS without a DOM mutation.
       updateAiNarrative();
       if (visit.hoverIcon !== icon || visit.summary) return;
+      if (allowGrace && Array.from(document.querySelectorAll(AI_NARRATIVE_TOOLTIP)).some(panel =>
+        panel.getClientRects().length && !panel.closest('[hidden], [aria-hidden="true"]'))) {
+        // Give the mounted native preview time to finish its in-flight request.
+        visit.hoverTimer = setTimeout(() => checkOpenPreview(false), 12000);
+        return;
+      }
       releaseAiNarrativeHover(visit);
       // Closing every attempt at four seconds starves slow native requests.
       visit.openTime = Math.min(32000, openTime * 2);
       retry();
-    }, openTime);
+    };
+    visit.hoverTimer = setTimeout(() => checkOpenPreview(true), openTime);
     dispatchNarrativeHover(icon, true);
   }
 
