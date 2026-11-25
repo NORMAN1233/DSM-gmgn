@@ -534,3 +534,15 @@ chrome.storage.onChanged.addListener((changes, area) => {
 });
 
 init();
+
+
+document.getElementById('reportNarrativeMissing')?.addEventListener('click', async () => {
+  const status = document.querySelector('#aiNarrativeScreen .message');
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const response = await chrome.tabs.sendMessage(tab.id, { type: 'DSM_REPORT_NARRATIVE_MISSING' });
+    showMessage(status, response?.ok ? '已提交到运行日志' : '当前页面没有进行中的 AI 叙事标注');
+  } catch {
+    showMessage(status, '请在已加载插件的 GMGN 代币详情页记录');
+  }
+});
