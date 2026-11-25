@@ -136,18 +136,22 @@ test('GMGN narrative recovers slow text and follows the visible token on navigat
   runTimer(2000);
   runTimer(4000);
   runTimer(4000);
-  runTimer(4000);
+  // The next native request has eight seconds to finish.
+  runTimer(8000);
   runTimer(8000);
   preview = {
     textContent: 'Late third narrative. Disclaimer: AI-generated',
     getClientRects: () => [{}], closest: () => null
   };
-  update();
+  // Existing preview becomes visible without a DOM notification.
+  runTimer(16000);
   assert.equal(drawings.at(-1).summary, 'Late third narrative.');
   assert.equal([...timers.values()].some(timer => timer.delay > 0), false);
 
   const link = {href: 'https://pump.fun/coin/third', getClientRects: () => [{}]};
-  const group = { parentElement: {querySelectorAll: () => [link]}, nextElementSibling: {querySelector: () => icon} };
+  const group = { parentElement: {querySelectorAll: () => [link]}, nextElementSibling: {
+    querySelectorAll: () => [{ getClientRects: () => [] }, icon]
+  } };
   name = {getClientRects: () => [{}], parentElement: {parentElement: {parentElement: group}}};
   location.pathname = '/sol/token/fourth';
   preview.textContent = 'Old header updated its tooltip. Disclaimer: AI-generated';
