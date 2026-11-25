@@ -188,21 +188,27 @@ test('GMGN narrative recovers slow text and follows the visible token on navigat
 
 test('cold detail header selects its icon when a visible sidebar icon is mounted first', () => {
   const source = readFileSync(require.resolve('../content.js'), 'utf8');
-  const detail = { getClientRects: () => [{}] };
-  const sidebar = { getClientRects: () => [{}] };
+  const detail = { closest: () => null, getClientRects: () => [{}] };
+  const sidebar = { closest: selector => selector === '#MainLayouLeftContanerId', getClientRects: () => [{}] };
+  let mounted = [sidebar, detail];
   let localIcons = [detail];
-  const link = { getClientRects: () => [{}], parentElement: { contains: node => localIcons.includes(node) } };
+  const link = { closest: () => null, getClientRects: () => [{}], parentElement: { contains: node => localIcons.includes(node) } };
   const lookup = runInNewContext(source.slice(source.indexOf('  function aiNarrativeIcon('),
     source.indexOf('  function findAiNarrativeTooltip(')) + '\naiNarrativeIcon', {
     TOKEN_ROUTE_RE: /\/token\/([^/]+)/, AI_NARRATIVE_ICON: '[data-icon="narrative"]',
     document: { querySelectorAll(selector) {
       if (selector.startsWith('[data-testid=')) return [];
-      if (selector.startsWith('[data-icon=')) return [sidebar, detail];
+      if (selector.startsWith('[data-icon=')) return mounted;
       return selector.includes('/coin/current"') ? [link] : [];
     } }
   });
   assert.equal(lookup('/sol/token/current'), detail);
   assert.equal(lookup('/sol/token/other'), null);
+  mounted = [sidebar];
+  assert.equal(lookup('/sol/token/current'), null, 'wait when only the tracker is mounted');
+  mounted = [detail];
+  assert.equal(lookup('/sol/token/current'), detail);
+  mounted = [sidebar, detail];
   localIcons = [sidebar, detail];
   assert.equal(lookup('/sol/token/current'), null);
 });

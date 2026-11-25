@@ -2731,16 +2731,21 @@
     }
     if (staleHeader) return null;
     const visible = Array.from(document.querySelectorAll(AI_NARRATIVE_ICON)).filter(icon => icon.getClientRects().length);
-    if (visible.length <= 1) return visible[0] || null;
+    // The persistent tracker may be the only mounted narrative icon during navigation.
+    const tracker = '#MainLayouLeftContanerId';
+    if (visible.length <= 1) {
+      const icon = visible[0];
+      return icon && !icon.closest(tracker) ? icon : null;
+    }
     if (!mint) return null;
     // The tracking sidebar can mount its own icons before the detail header
     // gets its symbol marker. Use a visible link for this exact mint.
     const selector = `a[href="https://pump.fun/coin/${mint}"], a[href="https://solscan.io/token/${mint}#metadata"]`;
     for (const link of document.querySelectorAll(selector)) {
-      if (!link.getClientRects().length) continue;
+      if (!link.getClientRects().length || link.closest(tracker)) continue;
       for (let group = link.parentElement, depth = 0; group && depth < 6; group = group.parentElement, depth++) {
         const nearby = visible.filter(icon => group.contains(icon));
-        if (nearby.length === 1) return nearby[0];
+        if (nearby.length === 1 && !nearby[0].closest(tracker)) return nearby[0];
         if (nearby.length > 1) break;
       }
     }
