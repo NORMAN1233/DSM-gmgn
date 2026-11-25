@@ -307,7 +307,7 @@ test('waits for the new pane to lay out before saving its normalized anchor', as
   await page.tick(100);
   await drawing;
   assert.equal(positions.length, 1);
-  assert.equal(positions[0].y, 10 / height);
+  assert.equal(positions[0].y, 48 / height);
 });
 
 test('invalidates the monitor and its drawing key when it observes navigation', async () => {

@@ -203,7 +203,7 @@
     const height = chart.getPanes?.()?.[0]?.getHeight?.() || Math.min(innerHeight, 400);
     const isTrend = kind === 'trend';
     const columnWidth = width * (isTrend ? 0.56 : 0.54) - 24;
-    const narrativeTop = 10;
+    const narrativeTop = width < 1200 ? 48 : 10;
     let fontSize = 13;
     // A mounting pane can expose its API at 1px high. Its saved relative
     // anchor would remain outside the plot even after the pane grows.
@@ -249,7 +249,7 @@
     }
     const longestLine = Math.max(...lines.map(line => Array.from(line).length));
     const x = isTrend ? Math.max(0.02, 1 - (longestLine * fontSize + 16) / width) : 0.46;
-    const y = isTrend ? Math.max(0.02, 1 - (lines.length * 19 + 12) / height) : narrativeTop / height;
+    const y = isTrend ? Math.max(0.02, 1 - (lines.length * 19 + 20) / height) : narrativeTop / height;
     return { position: { x, y }, text: lines.join('\n'), fontSize };
   }
 
