@@ -43,6 +43,9 @@
       stableTimer = null;
     }
     try {
+      if (request.id == null && request.unconfirmed) {
+        request.id = newlyDrawnId(request.chart, request.unconfirmed.before, request.unconfirmed.text);
+      }
       if (request.id != null) {
         request.chart.removeEntity(request.id);
         request.removedId = request.id;
@@ -109,18 +112,15 @@
       const added = shapes.filter(shape => !before.has(shape.id));
       if (!added.length) return null;
       let match = null;
-      let readable = true;
       for (const shape of added) {
         const actual = chart.getShapeById(shape.id)?.getProperties?.()?.text;
-        if (typeof actual !== 'string') readable = false;
         if (shape.name === 'anchored_text' && actual === text) {
           if (match !== null) return;
           match = shape.id;
-        } else if (actual === text) {
-          readable = false;
         }
       }
-      if (match !== null || readable) return match;
+      // A new entity with unrecognized properties may still be our text.
+      if (match !== null) return match;
     } catch {
       // Some widget versions do not expose all drawing properties.
     }
@@ -328,7 +328,7 @@
                 return;
               }
               // Older releases return null when creation fails.
-              if (id === null && request.id == null) return false;
+              if (id === null && request.id == null && kind !== 'trend') return false;
               if (id != null) request.id = id;
               if (request.id == null && request.unconfirmed) {
                 request.id = newlyDrawnId(chart, request.unconfirmed.before, text);

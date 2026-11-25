@@ -208,7 +208,7 @@ function mountDrawing(chart, { inFrame = false } = {}) {
   };
 }
 
-for (const kind of ['trend', 'narrative']) {
+for (const kind of ['narrative']) {
   test(kind + ' waits for the new mint and retries a null legacy drawing result', async () => {
     let symbol = 'sol/' + firstMint + '/USD/MCAP';
     const calls = [];
@@ -415,5 +415,23 @@ test('both healthy annotations share a single chart lookup and shape list per in
   await page.remove('trend', 'note');
   await page.remove('narrative', 'ai');
   assert.equal(page.timers.size, 0);
+  assert.deepEqual(page.errors, []);
+});
+
+test('a note painted without a returned ID stays single even with unfamiliar shape metadata', async () => {
+  const shapes = [];
+  let calls = 0;
+  const page = mountDrawing({
+    createAnchoredShape() {
+      shapes.push({ id: ++calls, name: 'unknown' });
+      return null;
+    },
+    getAllShapes: () => shapes,
+    getShapeById: () => ({ getProperties: () => ({ text: '' }) }),
+    removeEntity() {}
+  });
+  await page.draw('trend', 'note');
+  for (let i = 0; i < 5; i++) await page.tick(2000);
+  assert.equal(calls, 1);
   assert.deepEqual(page.errors, []);
 });
