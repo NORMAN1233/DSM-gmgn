@@ -263,3 +263,19 @@ html[data-dsm-platform="axiom"] .gmgn-viewed-ca-card-viewed::after {
     animation: none !important;
   }
 }
+
+.dsm-x-post-views-badge {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  padding: 0 4px;
+  border: 1px solid rgb(40 199 111 / 55%);
+  border-radius: 2px;
+  background: rgb(40 199 111 / 8%);
+  color: #28c76f;
+  font-size: 11px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  line-height: 14px;
+  white-space: nowrap;
+}

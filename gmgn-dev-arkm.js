@@ -358,15 +358,17 @@
     // GMGN may mount the hover card or populate the copy value just after click.
     // Throttle its DOM updates so continuous price/chart mutations can't starve checks.
     const scheduleCheck = (records) => {
+      if (debounce) return;
       const relevant = records.some((record) => {
         if (record.type === 'attributes') {
           const value = String(record.target.getAttribute(record.attributeName) || '').toLowerCase();
           if (record.attributeName === 'class' || record.attributeName === 'style') {
-            const rect = record.target.getBoundingClientRect();
-            if (rect.left < window.innerWidth * 0.4 || rect.right < window.innerWidth * 0.72 ||
-                rect.width > window.innerWidth * 0.72) return false;
             const text = String(record.target.textContent || '').slice(0, 1200);
-            return hasDevWalletLabel(text) || /钱包|持仓|买入|卖出/i.test(text) || DEV_ADDRESS_DETECT_RE.test(text);
+            if (!hasDevWalletLabel(text) && !/钱包|持仓|买入|卖出/i.test(text) &&
+                !DEV_ADDRESS_DETECT_RE.test(text)) return false;
+            const rect = record.target.getBoundingClientRect();
+            return rect.left >= window.innerWidth * 0.4 && rect.right >= window.innerWidth * 0.72 &&
+              rect.width <= window.innerWidth * 0.72;
           }
           return value.includes('dev') || value.includes('钱包') || DEV_ADDRESS_DETECT_RE.test(value);
         }
@@ -379,7 +381,6 @@
         });
       });
       if (!relevant) return;
-      if (debounce) return;
       debounce = setTimeout(() => {
         debounce = null;
         check();

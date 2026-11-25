@@ -1022,6 +1022,7 @@ async function executeAxiomXPreview(tabId, action) {
         const close = () => {
           const link = window[stateKey];
           window[stateKey] = null;
+          if (!link) return;
           if (link?.isConnected) {
             const rect = link.getBoundingClientRect();
             const base = {
@@ -1165,6 +1166,48 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // Messages explicitly targeted at the offscreen document must not be answered
   // by the service worker; otherwise the caller can receive the wrong responder.
   if (message.target === 'offscreen') return;
+
+  if (message.type === 'DSM_X_POST_VIEWS') {
+    if (!/^https:\/\/(?:[a-z0-9-]+\.)*gmgn\.ai\//i.test(sender.url || '') ||
+        typeof message.postId !== 'string' || !/^\d{1,20}$/.test(message.postId)) return;
+
+    (async () => {
+      const errors = [];
+      for (const host of ['api.fxtwitter.com', 'api-canary.fxtwitter.com']) {
+        try {
+          const response = await fetch(`https://${host}/2/status/${message.postId}`, {
+            credentials: 'omit',
+            signal: AbortSignal.timeout(8000)
+          });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const data = await response.json();
+          const post = data?.status ?? data?.tweet;
+          // FxTwitter returns the original status ID for resolved reposts.
+          const isRepost = Boolean(post?.reposted_by);
+          if (!post || !/^\d{1,20}$/.test(post.id ?? '') ||
+              (isRepost ? post.id === message.postId : post.id !== message.postId)) {
+            throw new Error('无法确认转发原帖或链接对应的帖子');
+          }
+          const original = message.readLinkedPost === true ? post : post.quote ?? post;
+          if (!Number.isSafeInteger(original.views) || original.views < 0) {
+            throw new Error('响应缺少原帖展现量');
+          }
+          sendResponse(original.views);
+          return;
+        } catch (error) {
+          errors.push(`${host}: ${error.message}`);
+        }
+      }
+      appendRuntimeLog({
+        level: 'error',
+        category: 'X 原帖展现量',
+        title: '读取展现量失败',
+        detail: `${message.postId} · ${errors.join(' | ')}`
+      });
+      sendResponse(null);
+    })();
+    return true;
+  }
 
   if (message.type === 'DSM_DEV_ARKM_SEARCH') {
     const address = String(message.address || '').trim();

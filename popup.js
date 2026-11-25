@@ -9,8 +9,12 @@ let activeLogFilter = 'all';
 const DEFAULT_SETTINGS = {
   dsmEnabled: true,
   viewedCAEnabled: true,
+  aiNarrativeEnabled: true,
+  trendNote: '',
   twitterVoiceEnabled: true,
   twitterVoiceVolume: 100,
+  xPostViewsEnabled: true,
+  xPostViewThreshold: 1_000_000,
   twitterVoiceName: 'zh-CN-XiaoxiaoNeural',
   twitterVoiceRate: 115,
   officialWalletCopyEnabled: true,
@@ -58,10 +62,13 @@ const $ = (id) => document.getElementById(id);
 
 const els = {
   masterEnabled: $('masterEnabled'),
-  dsmEnabled: $('dsmEnabled'),
+  aiNarrativeEnabled: $('aiNarrativeEnabled'),
+  trendNote: $('trendNote'),
   viewedEnabled: $('viewedEnabled'),
   twitterVoiceEnabled: $('twitterVoiceEnabled'),
   twitterVoiceVolume: $('twitterVoiceVolume'),
+  xPostViewsEnabled: $('xPostViewsEnabled'),
+  xPostViewThreshold: $('xPostViewThreshold'),
   twitterVoiceVolumeValue: $('twitterVoiceVolumeValue'),
   twitterVoiceName: $('twitterVoiceName'),
   twitterVoiceRate: $('twitterVoiceRate'),
@@ -82,12 +89,8 @@ const els = {
   viewedCount: $('viewedCount'),
   viewedCountDetail: $('viewedCountDetail'),
   clearButton: $('clearButton'),
-  homeClearButton: $('homeClearButton'),
-  homeMessage: $('homeMessage'),
   viewedMessage: $('viewedMessage'),
   socialMessage: $('socialMessage'),
-  decisionMessage: $('decisionMessage'),
-  settingsMessage: $('settingsMessage'),
   versionText: $('versionText'),
   headerVersion: $('headerVersion'),
   logStatus: $('logStatus'),
@@ -95,6 +98,7 @@ const els = {
   logList: $('logList'),
   refreshLogs: $('refreshLogs'),
   exportLogs: $('exportLogs'),
+  copyLogs: $('copyLogs'),
   clearLogs: $('clearLogs'),
   logsMessage: $('logsMessage')
 };
@@ -122,9 +126,14 @@ function showMessage(el, text) {
 function getSettingsFromControls() {
   return {
     dsmEnabled: els.masterEnabled.checked,
+    aiNarrativeEnabled: els.aiNarrativeEnabled.checked,
+    trendNote: els.trendNote.value.trim(),
     viewedCAEnabled: els.viewedEnabled.checked,
     twitterVoiceEnabled: els.twitterVoiceEnabled.checked,
     twitterVoiceVolume: Math.min(100, Math.max(0, Number(els.twitterVoiceVolume.value) || 0)),
+    xPostViewsEnabled: els.xPostViewsEnabled.checked,
+    xPostViewThreshold: els.xPostViewThreshold.value && els.xPostViewThreshold.validity.valid
+      ? Number(els.xPostViewThreshold.value) : DEFAULT_SETTINGS.xPostViewThreshold,
     twitterVoiceName: String(els.twitterVoiceName?.value || ''),
     twitterVoiceRate: [115, 150, 175].includes(Number(els.twitterVoiceRate?.value))
       ? Number(els.twitterVoiceRate.value) : 115,
@@ -212,15 +221,16 @@ async function refreshLogs() {
   }
 }
 
-// 导出始终写全量日志（忽略当前筛选），排查问题时才不会漏掉被筛掉的记录。
-async function exportLogs() {
-  const button = els.exportLogs;
+// 复制和导出都使用全量日志，便于排查问题。
+async function shareLogs(copy) {
+  const button = copy ? els.copyLogs : els.exportLogs;
+  const action = copy ? '复制' : '导出';
   if (button) button.disabled = true;
   try {
     const response = await chrome.runtime.sendMessage({ type: 'DSM_GET_LOGS' });
     const logs = Array.isArray(response?.logs) ? response.logs : [];
     if (!logs.length) {
-      showMessage(els.logsMessage, '暂无日志可导出');
+      showMessage(els.logsMessage, `暂无日志可${action}`);
       return;
     }
     const pad = (value) => String(value).padStart(2, '0');
@@ -233,11 +243,17 @@ async function exportLogs() {
     });
     const header = [
       `DSM-gmgn v${chrome.runtime.getManifest().version} 运行日志`,
-      `导出时间：${now.toLocaleString('zh-CN', { hour12: false })}`,
+      `${action}时间：${now.toLocaleString('zh-CN', { hour12: false })}`,
       `共 ${logs.length} 条`,
       '--------------------------------'
     ].join('\n');
-    const blob = new Blob([`${header}\n${lines.join('\n')}\n`], { type: 'text/plain;charset=utf-8' });
+    const logText = `${header}\n${lines.join('\n')}\n`;
+    if (copy) {
+      await navigator.clipboard.writeText(logText);
+      showMessage(els.logsMessage, `已复制 ${logs.length} 条日志`);
+      return;
+    }
+    const blob = new Blob([logText], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = url;
@@ -255,7 +271,7 @@ async function exportLogs() {
       detail: `${logs.length} 条 → ${anchor.download}`
     }).catch(() => {});
   } catch (error) {
-    showMessage(els.logsMessage, `导出失败：${error?.message || error}`);
+    showMessage(els.logsMessage, `${action}失败：${error?.message || error}`);
   } finally {
     if (button) button.disabled = false;
   }
@@ -264,7 +280,6 @@ async function exportLogs() {
 function applySettings(settings) {
   const s = { ...DEFAULT_SETTINGS, ...(settings || {}) };
   els.masterEnabled.checked = !!s.dsmEnabled;
-  els.dsmEnabled.checked = !!s.dsmEnabled;
   els.viewedEnabled.checked = !!s.viewedCAEnabled;
   els.twitterVoiceEnabled.checked = !!s.twitterVoiceEnabled;
   els.twitterVoiceVolume.value = String(Math.min(100, Math.max(0, Number(s.twitterVoiceVolume) || 0)));
@@ -286,8 +301,15 @@ function applySettings(settings) {
   els.restMinutes.value = String(s.restMinutes);
 
   const masterOn = !!s.dsmEnabled;
+  if (document.activeElement !== els.trendNote) els.trendNote.value = s.trendNote || '';
+  els.aiNarrativeEnabled.checked = !!s.aiNarrativeEnabled;
+  els.aiNarrativeEnabled.disabled = !masterOn;
   els.viewedEnabled.disabled = !masterOn;
   els.twitterVoiceEnabled.disabled = !masterOn;
+  els.xPostViewsEnabled.checked = !!s.xPostViewsEnabled;
+  els.xPostViewsEnabled.disabled = !masterOn;
+  els.xPostViewThreshold.disabled = !masterOn || !s.xPostViewsEnabled;
+  els.xPostViewThreshold.value = String(s.xPostViewThreshold);
   els.twitterVoiceVolume.disabled = !masterOn || !s.twitterVoiceEnabled;
   if (els.twitterVoiceName) els.twitterVoiceName.disabled = !masterOn || !s.twitterVoiceEnabled;
   if (els.twitterVoiceRate) els.twitterVoiceRate.disabled = !masterOn || !s.twitterVoiceEnabled;
@@ -385,14 +407,7 @@ async function init() {
   populateVoiceOptions(storedSettings.twitterVoiceName).catch(() => {});
 
   els.masterEnabled.addEventListener('change', async () => {
-    els.dsmEnabled.checked = els.masterEnabled.checked;
-    await saveSettings({ dsmEnabled: els.masterEnabled.checked }, els.settingsMessage);
-    applySettings(getSettingsFromControls());
-  });
-
-  els.dsmEnabled.addEventListener('change', async () => {
-    els.masterEnabled.checked = els.dsmEnabled.checked;
-    await saveSettings({ dsmEnabled: els.dsmEnabled.checked }, els.settingsMessage);
+    await saveSettings({ dsmEnabled: els.masterEnabled.checked });
     applySettings(getSettingsFromControls());
   });
 
@@ -400,9 +415,6 @@ async function init() {
 
   els.clearButton.addEventListener('click', () => {
     clearViewed().then(() => showMessage(els.viewedMessage, '已清空'));
-  });
-  els.homeClearButton.addEventListener('click', () => {
-    clearViewed().then(() => showMessage(els.homeMessage, '已清空'));
   });
 
   document.querySelectorAll('[data-log-filter]').forEach((button) => {
@@ -413,7 +425,8 @@ async function init() {
     });
   });
   if (els.refreshLogs) els.refreshLogs.addEventListener('click', refreshLogs);
-  if (els.exportLogs) els.exportLogs.addEventListener('click', exportLogs);
+  els.copyLogs.addEventListener('click', () => shareLogs(true));
+  els.exportLogs.addEventListener('click', () => shareLogs(false));
   if (els.clearLogs) els.clearLogs.addEventListener('click', async () => {
     await chrome.runtime.sendMessage({ type: 'DSM_CLEAR_LOGS' });
     await refreshLogs();
@@ -434,10 +447,22 @@ function advancedSaveBindings() {
 
   if (els.twitterVoicePreview) els.twitterVoicePreview.addEventListener('click', previewSelectedVoice);
 
+  $('saveTrendNote').addEventListener('click', async () => {
+    const status = els.trendNote.closest('.screen').querySelector('.message');
+    try {
+      await saveSettings({ trendNote: els.trendNote.value.trim() }, status);
+    } catch {
+      showMessage(status, '保存失败，请重试');
+    }
+  });
+
   const autoSaveControls = [
+    [els.aiNarrativeEnabled, 'aiNarrativeEnabled'],
     [els.viewedEnabled, 'viewedCAEnabled'],
     [els.twitterVoiceEnabled, 'twitterVoiceEnabled'],
     [els.twitterVoiceVolume, 'twitterVoiceVolume'],
+    [els.xPostViewsEnabled, 'xPostViewsEnabled'],
+    [els.xPostViewThreshold, 'xPostViewThreshold'],
     [els.twitterVoiceName, 'twitterVoiceName'],
     [els.twitterVoiceRate, 'twitterVoiceRate'],
     [els.officialWalletCopyEnabled, 'officialWalletCopyEnabled'],
@@ -458,13 +483,7 @@ function advancedSaveBindings() {
     control.addEventListener('change', async () => {
       const formSettings = getSettingsFromControls();
       if (els.masterEnabled.checked) {
-        const messageEl = control === els.viewedEnabled
-          ? els.viewedMessage
-          : (control === els.twitterVoiceEnabled || control === els.twitterVoiceVolume || control === els.twitterVoiceName || control === els.twitterVoiceRate || control === els.officialWalletCopyEnabled || control === els.selectionSearchEnabled || control === els.axiomPrimaryEnabled || control === els.devArkmEnabled
-            ? els.socialMessage
-            : (control === els.decisionEnabled || control === els.batteryEnabled || control === els.countdownVoiceEnabled
-              ? els.decisionMessage
-              : els.settingsMessage));
+        const messageEl = control.closest('.screen')?.querySelector('.message');
         await saveSettings({ [field]: formSettings[field] }, messageEl);
       }
       applySettings(formSettings);
@@ -476,10 +495,14 @@ function advancedSaveBindings() {
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
   const controlByField = {
-    dsmEnabled: [els.masterEnabled, els.dsmEnabled],
+    dsmEnabled: [els.masterEnabled],
+    aiNarrativeEnabled: [els.aiNarrativeEnabled],
+    trendNote: [els.trendNote],
     viewedCAEnabled: [els.viewedEnabled],
     twitterVoiceEnabled: [els.twitterVoiceEnabled],
     twitterVoiceVolume: [els.twitterVoiceVolume],
+    xPostViewsEnabled: [els.xPostViewsEnabled],
+    xPostViewThreshold: [els.xPostViewThreshold],
     twitterVoiceName: [els.twitterVoiceName],
     twitterVoiceRate: [els.twitterVoiceRate],
     officialWalletCopyEnabled: [els.officialWalletCopyEnabled],
@@ -503,7 +526,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
     for (const control of controls) {
       if (!control || (document.activeElement === control && control.type !== 'checkbox')) continue;
       if (control.type === 'checkbox') control.checked = !!change.newValue;
-      else control.value = String(change.newValue);
+      else control.value = String(change.newValue ?? '');
     }
   }
 

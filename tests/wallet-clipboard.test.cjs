@@ -84,29 +84,31 @@ async function setup(t, { history = [], backend, settings, url = 'https://gmgn.a
       }
     }
   };
+  list.addEventListener('click', event => event.preventDefault());
   window.eval(source);
   await flush();
   return {
     window, list, row, writes, requests, opens, observed,
-    latest: () => { let response; messageListener({ type: 'DSM_WALLET_LATEST_TOKEN' }, {}, (value) => { response = value; }); return response; },
+    clickLatest: () => { let response; messageListener({ type: 'DSM_WALLET_CLICK_LATEST' }, {}, (value) => { response = value; }); return response; },
     enable: (value) => settingsChanged({
       dsmSetting_officialWalletCopyEnabled: { newValue: value }
     }, 'local')
   };
 }
 
-test('history is ignored; latest new cross-chain notification retains its real URL without copying', async (t) => {
+test('shortcut resolves visible cross-chain rows at click time without copying', async (t) => {
   const h = await setup(t, { history: [SOL] });
-  assert.equal(h.latest().ok, false);
+  assert.equal(h.clickLatest().ca, SOL);
   h.list.prepend(h.row(SOL_NEXT));
   await flush();
-  assert.equal(h.latest().ca, SOL_NEXT);
+  assert.equal(h.clickLatest().ca, SOL_NEXT);
   const next = h.row(RH);
   h.list.prepend(next);
   await flush();
+  assert.equal(h.clickLatest().ca, RH);
   next.remove();
   await flush();
-  assert.equal(h.latest().url, `https://gmgn.ai/robinhood/token/${RH}`);
+  assert.equal(h.clickLatest().ca, SOL_NEXT);
   assert.deepEqual(h.writes, []);
   assert.deepEqual(h.requests, []);
 });
@@ -196,34 +198,34 @@ test('mixed batches retain the topmost notification and virtualized nodes update
   const top = h.row(RH);
   h.list.append(top, h.row(SOL));
   await flush();
-  assert.equal(h.latest().ca, RH);
+  assert.equal(h.clickLatest().ca, RH);
   top.href = `/sol/token/${SOL_NEXT}`;
   await flush();
-  assert.equal(h.latest().ca, SOL_NEXT);
+  assert.equal(h.clickLatest().ca, SOL_NEXT);
 });
 
-test('settings initialization retains new notifications but ignores history', async (t) => {
+test('shortcut uses current rows once settings are ready', async (t) => {
   const settings = deferred();
   const h = await setup(t, { settings, history: [RH] });
   h.list.prepend(h.row(SOL));
   await flush();
-  assert.equal(h.latest().ok, false);
+  assert.equal(h.clickLatest().ok, false);
   settings.resolve({});
   await flush();
-  assert.equal(h.latest().ca, SOL);
+  assert.equal(h.clickLatest().ca, SOL);
 });
 
-test('disable clears snapshots; re-enable waits for a fresh notification', async (t) => {
+test('disable blocks clicks and re-enable resolves current rows', async (t) => {
   const h = await setup(t);
   h.list.prepend(h.row(SOL));
   await flush();
   h.enable(false);
-  assert.equal(h.latest().ok, false);
+  assert.equal(h.clickLatest().ok, false);
   h.enable(true);
-  assert.equal(h.latest().ok, false);
+  assert.equal(h.clickLatest().ca, SOL);
   h.list.prepend(h.row(RH));
   await flush();
-  assert.equal(h.latest().ca, RH);
+  assert.equal(h.clickLatest().ca, RH);
 });
 
 test('foreign token links cannot become navigation targets', async (t) => {
@@ -232,7 +234,7 @@ test('foreign token links cannot become navigation targets', async (t) => {
   invalid.href = `https://evil.example/sol/token/${SOL}`;
   h.list.prepend(invalid);
   await flush();
-  assert.equal(h.latest().ok, false);
+  assert.equal(h.clickLatest().ok, false);
 });
 
 test('high-frequency class and text updates do not wake the wallet observer', async (t) => {
@@ -260,7 +262,7 @@ test('an older row changing A to B to A in one batch cannot replace the latest n
   older.href = `/sol/token/${SOL_NEXT}`;
   older.href = `/sol/token/${SOL}`;
   await flush();
-  assert.equal(h.latest().ca, RH);
+  assert.equal(h.clickLatest().ca, RH);
 });
 
 test('a transient detached row cannot displace a live notification', async (t) => {
@@ -280,14 +282,15 @@ test('a transient detached row cannot displace a live notification', async (t) =
 
 test('a late tracker marker is detected without text or class observation', async (t) => {
   const h = await setup(t);
-  const row = h.window.document.createElement('a');
-  row.href = `/sol/token/${SOL}`;
+  const row = h.row(SOL);
+  row.removeAttribute('data-sentry-component');
+  row.replaceChildren();
   h.list.append(row);
   await flush();
-  assert.equal(h.latest().ok, false);
+  assert.equal(h.clickLatest().ok, false);
   row.setAttribute('data-sentry-component', 'TrackerListItem');
   await flush();
-  assert.equal(h.latest().ca, SOL);
+  assert.equal(h.clickLatest().ca, SOL);
 });
 
 test('a new row is clicked before any observer microtask runs', async (t) => {

@@ -5,7 +5,8 @@ const path = require('node:path');
 const { JSDOM } = require('jsdom');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'content.js'), 'utf8');
-const code = source.slice(source.indexOf('  const social = {'), source.indexOf('  function sendSpeakMessage('));
+const code = source.slice(source.indexOf('  const social = {'), source.indexOf('  function sendSpeakMessage('))
+  + source.slice(source.indexOf('  function findTweetCardForNode('), source.indexOf('  function highlightedKeywordFromEvent('));
 
 function setup(html = '') {
   const dom = new JSDOM(html, { url: 'https://gmgn.ai', runScripts: 'outside-only' });
@@ -44,9 +45,9 @@ test('reply indicators with arrows cannot be persisted or spoken as author remar
 test('loading an old arrow-prefixed reply remark removes the polluted cache', () => {
   const app = setup();
   try {
-    app.mergeStoredTwitterMetadata({ 'dsmTwitterRemarkV2:himgajria': '↪ 回复' });
+    app.mergeStoredTwitterMetadata({ 'dsmTwitterRemarkV3:himgajria': '↪ 回复' });
     assert.equal(app.social.remarkMap.has('himgajria'), false);
-    assert.ok(app.removed.includes('dsmTwitterRemarkV2:himgajria'));
+    assert.ok(app.removed.includes('dsmTwitterRemarkV3:himgajria'));
     assert.equal(app.buildTwitterAnnouncement([{ id: 'himgajria', name: 'Him' }]), 'Him 发推啦');
   } finally { app.close(); }
 });
@@ -65,7 +66,7 @@ test('a header without an edit icon never takes an orange label from the tweet c
 test('a real header remark wins while reply targets and quoted authors are excluded', () => {
   const app = setup(`<article><div class="author-header">
     <span class="text-text-100 leading-[20px]">Him</span>
-    <span style="color:rgb(248,185,81)">我的备注</span>
+    <span style="color:rgb(248,185,81)">我的备注</span><svg data-icon="IconEdit16pxRegular"></svg>
     <a href="https://x.com/himgajria">@himgajria</a></div>
     <div class="cursor-text select-text"><span style="color:rgb(248,185,81)">↪ 回复</span>
       <a href="https://x.com/Chubbi230">@Chubbi230</a>

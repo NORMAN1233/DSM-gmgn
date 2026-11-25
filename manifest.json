@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "DSM-gmgn",
-  "version": "2.12.2",
+  "version": "2.12.29",
   "description": "GMGN + Axiom 交易辅助：已看 CA、跨屏搜索、5 秒决策，以及 GMGN 推特监控播报。",
   "permissions": [
     "storage",
@@ -11,6 +11,8 @@
     "clipboardWrite"
   ],
   "host_permissions": [
+    "https://api.fxtwitter.com/*",
+    "https://api-canary.fxtwitter.com/*",
     "https://gmgn.ai/*",
     "https://*.gmgn.ai/*",
     "https://axiom.trade/*",
@@ -30,7 +32,8 @@
         "https://*.gmgn.ai/*"
       ],
       "js": [
-        "twitter-inject.js"
+        "twitter-inject.js",
+        "gmgn-narrative-drawing.js"
       ],
       "run_at": "document_start",
       "world": "MAIN",
@@ -88,7 +91,7 @@
     }
   },
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; connect-src https://cloudflare-edge-tts.tech-melon.workers.dev; media-src 'self' blob:; object-src 'self';"
+    "extension_pages": "script-src 'self'; connect-src https://cloudflare-edge-tts.tech-melon.workers.dev https://api.fxtwitter.com https://api-canary.fxtwitter.com; media-src 'self' blob:; object-src 'self';"
   },
   "commands": {
     "toggle-wallet-copy": {
