@@ -107,14 +107,14 @@
 
   // Some GMGN widgets paint the text but return undefined. Only adopt a newly
   // listed shape with our text, so cleanup can never target an existing drawing.
-  function newlyDrawnId(chart, before, text) {
+  function newlyDrawnId(chart, before, text, retainedId) {
     if (!chart.getShapeById) return;
     try {
       const shapes = chart.getAllShapes?.();
       if (!Array.isArray(shapes)) return;
       if (!shapes.length) return null;
       if (!before) return;
-      const added = shapes.filter(shape => !before.has(shape.id));
+      const added = shapes.filter(shape => !before.has(shape.id) && shape.id !== retainedId);
       if (!added.length) return null;
       let match = null;
       for (const shape of added) {
@@ -327,7 +327,11 @@
                 overrides: { color: '#087f89', fontsize: fontSize }
               });
               if (!isCurrent(kind, request)) {
-                removeLateResult(request, id);
+                // A retired creation can paint after removal, then resolve without an ID.
+                const active = drawings.get(kind);
+                const retainedId = active?.widget === request.widget ? active.id : undefined;
+                const lateId = id ?? newlyDrawnId(chart, request.unconfirmed?.before, text, retainedId);
+                removeLateResult(request, lateId);
                 return;
               }
               // Older releases return null when creation fails.

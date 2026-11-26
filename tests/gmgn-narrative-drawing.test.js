@@ -459,3 +459,31 @@ test('a note painted without a returned ID stays single even with unfamiliar sha
   assert.equal(calls, 1);
   assert.deepEqual(page.errors, []);
 });
+
+
+test('retired note painted after a rapid switch is removed when creation returns no ID', async () => {
+  let finish;
+  const shapes = new Map();
+  const page = mountDrawing({
+    createAnchoredShape(_, { text }) {
+      if (!finish) return new Promise(resolve => {
+        finish = () => { shapes.set(11, text); resolve(undefined); };
+      });
+      shapes.set(12, text);
+      return 12;
+    },
+    getAllShapes: () => [...shapes.keys()].map(id => ({ id, name: 'anchored_text' })),
+    getShapeById: id => ({ getProperties: () => ({ text: shapes.get(id) }) }),
+    removeEntity: id => shapes.delete(id)
+  });
+  const old = page.draw('trend', 'same');
+  await flush();
+  await page.remove('trend', 'same');
+  page.location.pathname = '/sol/token/' + secondMint;
+  const next = page.draw('trend', 'same');
+  await page.tick(120);
+  await next;
+  finish();
+  await Promise.all([old, next]);
+  assert.deepEqual([...shapes.keys()], [12]);
+});
