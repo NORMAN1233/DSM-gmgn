@@ -213,7 +213,7 @@ test('cold detail header selects its icon when a visible sidebar icon is mounted
   assert.equal(lookup('/sol/token/current'), null);
 });
 
-test('retries an unreceived note and cached narrative when the drawing listener starts late', () => {
+test('retries a cached narrative when the drawing listener starts late', () => {
   const code = readFileSync(require.resolve('../content.js'), 'utf8');
   const section = (start, end) => code.slice(code.indexOf(start), code.indexOf(end));
   const route = '/token/test';
@@ -227,7 +227,6 @@ test('retries an unreceived note and cached narrative when the drawing listener 
     section('  let trendNoteDrawing;', '  function startUrlWatcher()') +
     '\n({updateTrendNote, showAiNarrative})', context);
   const visit = {route, summary: 'cached'};
-  api.updateTrendNote();
   api.showAiNarrative(visit, visit.summary);
   assert.equal(visit.drawingKey, null);
   const received = [];
@@ -235,11 +234,35 @@ test('retries an unreceived note and cached narrative when the drawing listener 
     received.push(event.detail.summary);
     event.preventDefault();
   });
-  api.updateTrendNote();
-  api.updateTrendNote();
   api.showAiNarrative(visit, visit.summary);
   assert.ok(visit.drawingKey);
-  assert.deepEqual(received, ['saved', 'cached']);
+  assert.deepEqual(received, ['cached']);
+});
+
+test('rapid token switches and pane replacement leave exactly one note', () => {
+  const source = readFileSync(require.resolve('../content.js'), 'utf8');
+  const nodes = new Set();
+  const makePane = () => ({ appendChild(node) { nodes.add(node); node.parentElement = this; } });
+  let pane = makePane();
+  const doc = {
+    querySelector: () => pane, getElementById: () => [...nodes][0],
+    createElement: () => ({ style: {}, remove() { nodes.delete(this); } })
+  };
+  const frame = { contentDocument: doc, getClientRects: () => [{}] };
+  const ctx = { document: { querySelectorAll: () => [frame] }, location: {},
+    TOKEN_ROUTE_RE: /token/, settings: { dsmEnabled: true, trendNote: 'saved' } };
+  const update = runInNewContext(source.slice(source.indexOf('  let trendNoteDrawing;'),
+    source.indexOf('  function startUrlWatcher()')) + '\nupdateTrendNote', ctx);
+  for (let i = 0; i < 100; i++) {
+    ctx.location.pathname = '/token/' + i;
+    if (i % 3 === 0) pane = makePane();
+    update();
+    assert.equal(nodes.size, 1);
+    assert.equal([...nodes][0].parentElement, pane);
+  }
+  ctx.settings.trendNote = '';
+  update();
+  assert.equal(nodes.size, 0);
 });
 
 test('automatic hover reaches the native wrapper and sends a positioned move', () => {

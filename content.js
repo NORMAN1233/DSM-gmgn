@@ -3082,28 +3082,35 @@
 
   let trendNoteDrawing;
 
-  window.addEventListener('DSM_NARRATIVE_DRAWING_FAILED', ({ detail }) => {
-    if (!trendNoteDrawing || detail?.key !== trendNoteDrawing.key) return;
-    trendNoteDrawing.key = null;
-    if (document.visibilityState === 'visible') updateTrendNote();
-  });
-
   function updateTrendNote() {
     const route = location.pathname;
     const summary = settings.dsmEnabled && TOKEN_ROUTE_RE.test(route)
       ? String(settings.trendNote || '').trim().slice(0, 120) : '';
-    if (trendNoteDrawing?.route !== route || trendNoteDrawing?.summary !== summary) {
-      if (trendNoteDrawing?.key) {
-        window.dispatchEvent(new CustomEvent('DSM_NARRATIVE_DRAWING', {
-          detail: { kind: 'trend', key: trendNoteDrawing.key, remove: true }
-        }));
-      }
+    if (!summary) {
+      trendNoteDrawing?.node.remove();
       trendNoteDrawing = null;
+      return;
     }
-    if (!summary || trendNoteDrawing?.key) return;
-    const key = crypto.randomUUID();
-    trendNoteDrawing = { route, summary, key };
-    if (!sendChartDrawing({ kind: 'trend', route, summary, key })) trendNoteDrawing.key = null;
+    for (const frame of document.querySelectorAll('iframe[id^="tradingview_"], iframe[title="Financial Chart"]')) {
+      const doc = frame.contentDocument;
+      if (!doc || !frame.getClientRects().length) continue;
+      const pane = doc.querySelector('.chart-gui-wrapper') || doc.querySelector('td.pane canvas')?.parentElement;
+      if (!pane) continue;
+      let node = doc.getElementById('dsm-trend-note');
+      if (trendNoteDrawing && trendNoteDrawing.node !== node) trendNoteDrawing.node.remove();
+      if (!node) {
+        node = doc.createElement('div');
+        node.id = 'dsm-trend-note';
+        node.style.cssText = 'position:absolute;bottom:20px;right:16px;max-width:min(54%,32em);z-index:4;pointer-events:none;white-space:pre-wrap;overflow-wrap:anywhere;color:#087f89;font:13px/19px Arial,sans-serif';
+      }
+      if (node.parentElement !== pane) pane.appendChild(node);
+      const text = '备注：' + summary;
+      if (node.textContent !== text) node.textContent = text;
+      trendNoteDrawing = { route, node, frame };
+      return;
+    }
+    trendNoteDrawing?.node.remove();
+    trendNoteDrawing = null;
   }
 
   function startUrlWatcher() {
@@ -3118,7 +3125,8 @@
         tokenPage = TOKEN_ROUTE_RE.test(path);
       }
       if (IS_GMGN && settings.dsmEnabled) {
-        if (settings.trendNote && (trendNoteDrawing?.route !== path || !trendNoteDrawing.key) &&
+        if (settings.trendNote && (trendNoteDrawing?.route !== path || !trendNoteDrawing.node.isConnected || !trendNoteDrawing.frame.isConnected ||
+            trendNoteDrawing.frame.contentDocument !== trendNoteDrawing.node.ownerDocument) &&
             (tokenPage || trendNoteDrawing)) updateTrendNote();
         if (settings.aiNarrativeEnabled && (tokenPage || aiNarrativeVisit) &&
             (aiNarrativeVisit?.route !== path ||
